@@ -1,23 +1,21 @@
 # Tokenixo
 
-.py that count your slop tokens
+.py that count your slop machine tokens
 
-![License](https://img.shields.io/badge/license-MIT-blue)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
-
-## Features
+## How it work?
 
 Just try it.
 
-## Installation
+## How to install?
 
+macOS
 ```bash
 git clone https://github.com/Duzf7/Tokenixo.git
 cd Tokenixo
 pip install -r requirements.txt
 ```
 
-## Usage
+## How to Run?
 
 ```bash
 python Tokenixo.py
