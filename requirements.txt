@@ -1,0 +1,4 @@
+# Tokenixo — at least one tokenizer backend is required.
+# tiktoken is recommended (faster, smaller). Install one or both:
+tiktoken==0.12.0
+tokenizers==0.22.2

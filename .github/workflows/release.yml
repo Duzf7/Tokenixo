@@ -1,0 +1,88 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pyinstaller tiktoken tokenizers pillow
+      - name: Build macOS app
+        run: pyinstaller Tokenixo.spec
+      - name: Zip macOS app
+        run: |
+          cd dist
+          zip -r Tokenixo-macOS.zip Tokenixo.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tokenixo-macOS
+          path: dist/Tokenixo-macOS.zip
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pyinstaller tiktoken tokenizers pillow
+      - name: Build Windows exe
+        run: pyinstaller Tokenixo.spec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tokenixo-Windows
+          path: dist/Tokenixo.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y python3-tk
+          pip install pyinstaller tiktoken tokenizers pillow
+      - name: Build Linux binary
+        run: pyinstaller Tokenixo.spec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tokenixo-Linux
+          path: dist/Tokenixo
+
+  release:
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Tokenixo-macOS
+          path: artifacts/
+      - uses: actions/download-artifact@v4
+        with:
+          name: Tokenixo-Windows
+          path: artifacts/
+      - uses: actions/download-artifact@v4
+        with:
+          name: Tokenixo-Linux
+          path: artifacts/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/Tokenixo-macOS.zip
+            artifacts/Tokenixo.exe
+            artifacts/Tokenixo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
