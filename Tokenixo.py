@@ -1,328 +1,272 @@
 #!/usr/bin/env python3
-"""
-Tokenixo - Offline Token Counter
-=================================
-A standalone window app to count tokens. Real-time counting as you type.
-Author: Duzf7 | License: MIT | https://github.com/Duzf7/Tokenixo
-Dependencies: pip install tiktoken  OR  pip install tokenizers
-"""
-VERSION = "26.1.6"  # ← change version here; syncs to title bar and credit label
+"""Tokenixo - Offline Token Counter | Duzf7 | MIT | github.com/Duzf7/Tokenixo
+Dependencies: pip install tiktoken  OR  pip install tokenizers"""
+VERSION="26.1.7"  # ← change version here; syncs everywhere
 
-import sys, platform, subprocess, threading, tkinter as tk
-from tkinter import scrolledtext, filedialog
-from bisect import bisect_left, bisect_right
+import sys,platform,subprocess,threading,tkinter as tk
+from tkinter import filedialog
+from bisect import bisect_left,bisect_right
 
 
 def _load_tiktoken():
-    import tiktoken  # type: ignore[reportMissingImports]
-    enc = tiktoken.get_encoding("cl100k_base")
-    _ds = lambda d: sys.getsizeof(d) + sum(sys.getsizeof(k) + sys.getsizeof(v) for k, v in d.items())
-    size = _ds(enc._mergeable_ranks) + (_ds(enc._special_tokens) if hasattr(enc, '_special_tokens') else 0)
-    def encode(text): return enc.encode(text)
+    import tiktoken  # type: ignore
+    enc=tiktoken.get_encoding("cl100k_base")
+    _ds=lambda d:sys.getsizeof(d)+sum(sys.getsizeof(k)+sys.getsizeof(v) for k,v in d.items())
+    size=_ds(enc._mergeable_ranks)+(_ds(enc._special_tokens) if hasattr(enc,'_special_tokens') else 0)
     def token_spans(text):
-        spans, offset = [], 0
-        for tok_id in enc.encode(text):
-            piece = enc.decode([tok_id]); spans.append((offset, offset + len(piece))); offset += len(piece)
+        spans,off=[],0
+        for tid in enc.encode(text): p=enc.decode([tid]); spans.append((off,off+len(p))); off+=len(p)
         return spans
-    return encode, token_spans, size
-
+    return enc.encode,token_spans,size
 
 def _load_xenova():
-    from transformers import GPT2TokenizerFast  # type: ignore[reportMissingImports]
-    try:    tok = GPT2TokenizerFast.from_pretrained('Xenova/claude-tokenizer', local_files_only=True)
-    except: tok = GPT2TokenizerFast.from_pretrained('Xenova/claude-tokenizer')
-    try:    size = len(tok.backend_tokenizer.to_str().encode('utf-8'))
-    except: size = sys.getsizeof(tok.get_vocab()) + sum(sys.getsizeof(k) + sys.getsizeof(v) for k, v in tok.get_vocab().items())
-    def encode(text): return tok.encode(text)
+    from transformers import GPT2TokenizerFast  # type: ignore
+    try:    tok=GPT2TokenizerFast.from_pretrained('Xenova/claude-tokenizer',local_files_only=True)
+    except: tok=GPT2TokenizerFast.from_pretrained('Xenova/claude-tokenizer')
+    try:    size=len(tok.backend_tokenizer.to_str().encode())
+    except: size=sum(sys.getsizeof(k)+sys.getsizeof(v) for k,v in tok.get_vocab().items())
     def token_spans(text):
-        encoding = tok(text, return_offsets_mapping=True)
-        offsets = encoding.get("offset_mapping", [])
-        if offsets: return [(s, e) for s, e in offsets if e > s]
-        spans, offset = [], 0
-        for tok_id in encoding["input_ids"]:
-            piece = tok.decode([tok_id]); spans.append((offset, offset + len(piece))); offset += len(piece)
+        e=tok(text,return_offsets_mapping=True); ofs=e.get("offset_mapping",[])
+        if ofs: return[(s,e) for s,e in ofs if e>s]
+        spans,off=[],0
+        for tid in e["input_ids"]: p=tok.decode([tid]); spans.append((off,off+len(p))); off+=len(p)
         return spans
-    return encode, token_spans, size
+    return tok.encode,token_spans,size
 
+LOADERS=[("tiktoken (cl100k_base)",_load_tiktoken),("Xenova/claude-tokenizer",_load_xenova)]
 
-TOKENIZER_LOADERS = [("tiktoken (cl100k_base)", _load_tiktoken), ("Xenova/claude-tokenizer", _load_xenova)]
+def _line_idx(text):
+    s,p=[0],0
+    while(p:=text.find('\n',p))!=-1: p+=1; s.append(p)
+    return s
 
+def _lc(offs,ls):
+    res,li,n=[],0,len(ls)
+    for o in offs:
+        while li+1<n and ls[li+1]<=o: li+=1
+        res.append(f"{li+1}.{o-ls[li]}")
+    return res
 
-def _build_line_index(text):
-    starts, pos = [0], 0
-    while True:
-        pos = text.find('\n', pos)
-        if pos == -1: break
-        pos += 1; starts.append(pos)
-    return starts
+_T=[f"tok{i}" for i in range(6)]; _B=[f"tok{i}b" for i in range(6)]; _N=6
+_LS=["#e8eeff","#fff8e0","#e2faf0","#fdeef8","#ededff","#fff5d0"]
+_LB=["#bad0fc","#fce496","#9fedc8","#f7bedd","#c0caff","#faca4a"]
+_DS=["#152645","#2a2300","#082416","#280b1a","#181636","#271e00"]
+_DB=["#1a4f96","#6e5700","#0b6e35","#6e1a52","#28289a","#6e5700"]
+# glass palette: (win, card, border, fg, sub)
+_GL=("#f0f4fc","#ffffff","#d8e0f4","#1a1a2e","#6670a0")
+_GD=("#13151f","#1e2130","#2e3348","#e0e4f4","#7880a8")
+_CTX=[("Haiku 4.5",200_000),("Sonnet 4.6",1_000_000),("Opus 4.6",1_000_000)]
 
-
-def _batch_offsets_to_linecol(offsets, line_starts):
-    results, line_idx, num_lines = [], 0, len(line_starts)
-    for off in offsets:
-        while line_idx + 1 < num_lines and line_starts[line_idx + 1] <= off: line_idx += 1
-        results.append(f"{line_idx + 1}.{off - line_starts[line_idx]}")
-    return results
-
-
-_TAG_NAMES      = [f"tok{i}"  for i in range(6)]
-_TAG_NAMES_BOLD = [f"tok{i}b" for i in range(6)]
-_NUM_COLORS     = 6
-
-_LIGHT_SOFT = ["#EBF0FE","#FEF8E3","#E6FCF1","#FDF1F8","#EEEFFF","#FEF1C4"]
-_LIGHT_BOLD = ["#B8D4FD","#FDE69A","#A8F0CE","#F9C8E1","#C4CCFF","#FCD650"]
-_DARK_SOFT  = ["#1a3154","#2e2800","#0a2a18","#2e0e20","#1c1a3c","#2e2300"]
-_DARK_BOLD  = ["#1e5ca8","#7a6200","#0d7a3c","#7a1e5c","#2e2e9e","#7a6200"]
-_LIGHT_BG, _LIGHT_FG = "#ffffff", "#000000"
-_DARK_BG,  _DARK_FG  = "#1e1e1e", "#d4d4d4"
-
-
-def _is_dark_mode():
+def _dark():
     try:
-        if platform.system() == "Darwin":
-            r = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"], capture_output=True, text=True)
-            return r.returncode == 0 and r.stdout.strip() == "Dark"
-    except Exception: pass
-    return False
+        r=subprocess.run(["defaults","read","-g","AppleInterfaceStyle"],capture_output=True,text=True)
+        return r.returncode==0 and r.stdout.strip()=="Dark"
+    except: return False
 
 
-class TokenCounterApp:
+class App:
     def __init__(self):
-        (self.tokenizers, self.method, self.encode_func, self.spans_func,
-         self._loading, self._has_counted, self._full_results) = {}, None, None, None, True, False, None
-        (self._cached_spans, self._cached_span_starts, self._cached_line_starts,
-         self._last_text, self._count_gen, self._visible_tag_range) = None, None, None, None, 0, None
-        self._recount_after_id = self._scroll_after_id = None
-        self._dark_mode = _is_dark_mode()
+        (self.toks,self.method,self.enc,self.sfn,self._load,self._done2,self._res2)={},None,None,None,True,False,None
+        (self._spans,self._ss,self._ls,self._last,self._gen,self._vrange)=None,None,None,None,0,None
+        self._rid=self._sid=None; self._dm=_dark() if platform.system()=="Darwin" else False
+        r=self.root=tk.Tk(); r.title(f"Tokenixo v{VERSION}"); r.minsize(720,520)
+        sw,sh=r.winfo_screenwidth(),r.winfo_screenheight()
+        r.geometry(f"980x740+{(sw-980)//2}+{(sh-740)//2}"); r.wm_attributes("-alpha",0.96)
+        r.grid_rowconfigure(2,weight=1); r.grid_columnconfigure(0,weight=1)
+        self._ui(); self._theme(); self._poll()
+        threading.Thread(target=self._loadtoks,daemon=True).start()
 
-        self.root = tk.Tk()
-        self.root.title(f"Tokenixo v{VERSION} - Offline Token Counter")
-        w, h = 1000, 750
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        self.root.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
-        self.root.minsize(700, 500)
-        self._build_ui()
-        self._apply_theme()
-        self._poll_dark_mode()
-        threading.Thread(target=self._load_tokenizers, daemon=True).start()
+    def _ui(self):
+        r=self.root
+        top=self._top=tk.Frame(r); top.grid(row=0,column=0,sticky="ew",padx=12,pady=(12,0))
+        top.grid_columnconfigure(1,weight=1)
+        tk.Label(top,text="Tokenizer",font=("Menlo",12)).grid(row=0,column=0,padx=(12,6),pady=10)
+        self.mv=tk.StringVar(value="Loading…")
+        mm=self.mm=tk.OptionMenu(top,self.mv,"Loading…"); mm.configure(relief="flat",bd=0,highlightthickness=0,font=("Menlo",11))
+        mm.grid(row=0,column=1,sticky="w",pady=8)
+        self._b0=tk.Button(top,text="Clear",command=self._clear,relief="flat",bd=0,padx=10,pady=4,cursor="hand2",font=("Menlo",11))
+        self._b0.grid(row=0,column=2,padx=4,pady=8)
+        self._b1=tk.Button(top,text="Open…",command=self._open,relief="flat",bd=0,padx=10,pady=4,cursor="hand2",font=("Menlo",11))
+        self._b1.grid(row=0,column=3,padx=(0,8),pady=8)
+        self.st=tk.Label(r,text="Loading…",anchor="w",font=("Menlo",11))
+        self.st.grid(row=1,column=0,sticky="ew",padx=16,pady=(6,2))
+        inp=self._inp=tk.Frame(r); inp.grid(row=2,column=0,sticky="nsew",padx=12,pady=(0,6))
+        inp.grid_rowconfigure(0,weight=1); inp.grid_columnconfigure(0,weight=1)
+        ti=self.ti=tk.Text(inp,wrap=tk.WORD,font=("Menlo",13),relief="flat",bd=0,padx=14,pady=12,insertwidth=2)
+        sb=tk.Scrollbar(inp,command=ti.yview); ti.configure(yscrollcommand=lambda *a:(sb.set(*a),self._svp()))
+        ti.grid(row=0,column=0,sticky="nsew"); sb.grid(row=0,column=1,sticky="ns")
+        for t in _T: ti.tag_configure(t)
+        for t in _B: ti.tag_configure(t); ti.tag_raise(t)
+        ti.bind("<Configure>",lambda e:self._svp())
+        rf=self._rf=tk.Frame(r); rf.grid(row=3,column=0,sticky="ew",padx=12,pady=(0,6)); rf.grid_columnconfigure(list(range(5)),weight=1)
+        self.rl={}
+        for i,(d,k) in enumerate([("Tokens","tokens"),("Chars","chars"),("Words","words"),("Lines","lines"),("Ch/Tok","cpt")]):
+            tk.Label(rf,text=d,font=("Menlo",10)).grid(row=0,column=i,pady=(10,0))
+            lb=tk.Label(rf,text="—",font=("Menlo",18,"bold")); lb.grid(row=1,column=i,pady=(0,6)); self.rl[k]=lb
+        cf=self._cf=tk.Frame(r); cf.grid(row=4,column=0,sticky="ew",padx=12,pady=(0,6)); cf.grid_columnconfigure(0,weight=1)
+        tk.Label(cf,text="Context Window Usage",anchor="w",font=("Menlo",10,"bold")).grid(row=0,column=0,sticky="w",padx=12,pady=(8,4))
+        self.cl={}
+        for i,(n,_) in enumerate(_CTX):
+            lb=tk.Label(cf,text="",anchor="w",font=("Menlo",11)); lb.grid(row=i+1,column=0,sticky="ew",padx=16,pady=1); self.cl[n]=lb
+        self._ft=tk.Label(r,text=f"Tokenixo v{VERSION}  ·  Duzf7  ·  MIT",anchor="center",font=("Menlo",10))
+        self._ft.grid(row=5,column=0,sticky="ew",padx=12,pady=(0,10))
+        ti.bind("<KeyRelease>",lambda e:self._src()); ti.bind("<<Paste>>",lambda e:r.after(1,self._src))
+        ti.bind("<<Cut>>",lambda e:r.after(1,self._src)); ti.bind("<<Selection>>",lambda e:self._sel())
+        ti.bind("<ButtonRelease-1>",lambda e:r.after(10,self._sel))
 
-    def _load_tokenizers(self):
-        for name, loader in TOKENIZER_LOADERS:
-            try:
-                enc, spn, sz = loader()
-                self.tokenizers[name] = (enc, spn, sz)
-            except Exception: pass
-        self.root.after(0, self._on_tokenizers_ready)
+    def _theme(self):
+        g=_GD if self._dm else _GL; soft,bold=(_DS,_DB) if self._dm else (_LS,_LB)
+        win,cd,brd,fg,sub=g
+        self.root.configure(bg=win)
+        for w in[self._top,self._inp,self._rf,self._cf]: w.configure(bg=cd,highlightbackground=brd,highlightthickness=1)
+        self.ti.configure(bg=cd,fg=fg,insertbackground=fg,selectbackground=brd,selectforeground=fg)
+        for w in[self.st,self._ft]: w.configure(bg=win,fg=sub)
+        for p in[self._top,self._rf,self._cf]:
+            for w in p.winfo_children():
+                if isinstance(w,(tk.Label,tk.Button)): w.configure(bg=p["bg"],fg=fg,**({"activebackground":brd,"activeforeground":fg} if isinstance(w,tk.Button) else {}))
+        self.mm.configure(bg=cd,fg=fg,activebackground=brd); self.mm["menu"].configure(bg=cd,fg=fg)
+        for t,c in zip(_T,soft): self.ti.tag_configure(t,background=c)
+        for t,c in zip(_B,bold): self.ti.tag_configure(t,background=c)
+        self._vrange=None; self._vp()
 
-    def _on_tokenizers_ready(self):
-        self._loading = False
-        if not self.tokenizers:
-            self.status_label.config(text="ERROR: No tokenizer found. pip install tiktoken or transformers"); return
-        self.method = list(self.tokenizers.keys())[0]
-        self.encode_func, self.spans_func, _ = self.tokenizers[self.method]
-        menu = self.method_menu["menu"]; menu.delete(0, "end")
-        for name in self.tokenizers:
-            _, _, sz = self.tokenizers[name]
-            menu.add_command(label=f"{name} — {sz/(1024*1024):.2f} MB", command=lambda n=name: self._on_method_change(n))
-        _, _, sz = self.tokenizers[self.method]
-        self.method_var.set(f"{self.method} — {sz/(1024*1024):.2f} MB")
-        self.status_label.config(text=f"Ready — {len(self.tokenizers)} tokenizer(s)")
-        text = self.text_input.get("1.0", "end-1c")
-        if text.strip(): self._count()
+    def _poll(self):
+        cur=_dark() if platform.system()=="Darwin" else False
+        if cur!=self._dm: self._dm=cur; self._theme()
+        self.root.after(2000,self._poll)
 
-    def _build_ui(self):
-        root = self.root
-        top = tk.Frame(root); top.pack(fill=tk.X, padx=10, pady=(10,5))
-        tk.Label(top, text="Tokenizer:", anchor="w").pack(side=tk.LEFT)
-        self.method_var = tk.StringVar(value="Loading...")
-        self.method_menu = tk.OptionMenu(top, self.method_var, "Loading...")
-        self.method_menu.pack(side=tk.LEFT, padx=(5,0))
-        tk.Button(top, text="Open File...", command=self._open_file).pack(side=tk.RIGHT, padx=(5,0))
-        tk.Button(top, text="Clear", command=self._clear).pack(side=tk.RIGHT, padx=(5,0))
-        self.status_label = tk.Label(root, text="Loading tokenizers...", anchor="w", fg="gray")
-        self.status_label.pack(fill=tk.X, padx=10)
-        tk.Label(root, text="Paste or type your text:", anchor="w").pack(fill=tk.X, padx=10)
-        self.text_input = scrolledtext.ScrolledText(root, wrap=tk.WORD, font=("Menlo", 13))
-        self.text_input.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,5))
-        for tag in _TAG_NAMES:      self.text_input.tag_configure(tag)
-        for tag in _TAG_NAMES_BOLD: self.text_input.tag_configure(tag); self.text_input.tag_raise(tag)
-        def _on_yscroll(*a): self.text_input.vbar.set(*a); self._schedule_viewport_update()
-        self.text_input.configure(yscrollcommand=_on_yscroll)
-        self.text_input.bind("<Configure>", lambda e: self._schedule_viewport_update())
+    def _loadtoks(self):
+        for n,L in LOADERS:
+            try: e,s,z=L(); self.toks[n]=(e,s,z)
+            except: pass
+        self.root.after(0,self._ready)
 
-        self.results_frame = tk.LabelFrame(root, text="Results", padx=10, pady=5)
-        self.results_frame.pack(fill=tk.X, padx=10, pady=(0,10))
-        self.result_labels = {}
-        row = tk.Frame(self.results_frame); row.pack(fill=tk.X)
-        for dname, key in [("Tokens","tokens"),("Characters","characters"),("Words","words"),("Lines","lines"),("Chars/Token","cpt")]:
-            cell = tk.Frame(row); cell.pack(side=tk.LEFT, expand=True, fill=tk.X)
-            tk.Label(cell, text=dname, font=("Helvetica",11)).pack()
-            lbl = tk.Label(cell, text="-", font=("Helvetica",16,"bold")); lbl.pack()
-            self.result_labels[key] = lbl
-        tk.Label(self.results_frame, text="Context Window Usage:", anchor="w", font=("Helvetica",11)).pack(fill=tk.X, pady=(8,2))
-        self.context_labels = {}
-        for name in ["Haiku 4.5","Sonnet 4.6","Opus 4.6"]:
-            lbl = tk.Label(self.results_frame, text="", anchor="w"); lbl.pack(fill=tk.X); self.context_labels[name] = lbl
-        tk.Label(root, text=f"Tokenixo v{VERSION}  |  By Duzf7  |  MIT License",
-                 anchor="center", fg="gray", font=("Helvetica",10)).pack(fill=tk.X, padx=10, pady=(0,5))
+    def _ready(self):
+        self._load=False
+        if not self.toks: self.st.config(text="ERROR: pip install tiktoken or transformers"); return
+        self.method=list(self.toks.keys())[0]; self.enc,self.sfn,_=self.toks[self.method]
+        mn=self.mm["menu"]; mn.delete(0,"end")
+        for n in self.toks:
+            _,_,z=self.toks[n]; mn.add_command(label=f"{n} — {z/1048576:.1f}MB",command=lambda x=n:self._sw(x))
+        _,_,z=self.toks[self.method]; self.mv.set(f"{self.method} — {z/1048576:.1f}MB")
+        self.st.config(text=f"Ready — {len(self.toks)} tokenizer(s)"); t=self.ti.get("1.0","end-1c")
+        if t.strip(): self._count()
 
-        ti = self.text_input
-        ti.bind("<KeyRelease>",      lambda e: self._schedule_recount())
-        ti.bind("<<Paste>>",         lambda e: self.root.after(1, self._schedule_recount))
-        ti.bind("<<Cut>>",           lambda e: self.root.after(1, self._schedule_recount))
-        ti.bind("<<Selection>>",     lambda e: self._on_selection_change())
-        ti.bind("<ButtonRelease-1>", lambda e: self.root.after(10, self._on_selection_change))
+    def _sw(self,n):
+        self.method=n; self.enc,self.sfn,_=self.toks[n]
+        _,_,z=self.toks[n]; self.mv.set(f"{n} — {z/1048576:.1f}MB"); self._done2=False; self._res2=None; self._count()
 
-    def _apply_theme(self):
-        dark = self._dark_mode
-        soft, bold = (_DARK_SOFT, _DARK_BOLD) if dark else (_LIGHT_SOFT, _LIGHT_BOLD)
-        bg, fg = (_DARK_BG, _DARK_FG) if dark else (_LIGHT_BG, _LIGHT_FG)
-        self.text_input.configure(background=bg, foreground=fg, insertbackground=fg, selectbackground=bg, selectforeground=fg)
-        for tag, c in zip(_TAG_NAMES, soft):      self.text_input.tag_configure(tag, background=c)
-        for tag, c in zip(_TAG_NAMES_BOLD, bold): self.text_input.tag_configure(tag, background=c)
-        self._visible_tag_range = None; self._apply_visible_highlights()
+    def _src(self):
+        if self._rid: self.root.after_cancel(self._rid)
+        self._rid=self.root.after(150,lambda:self._count() if self.ti.get("1.0","end-1c")!=self._last else None)
 
-    def _poll_dark_mode(self):
-        cur = _is_dark_mode()
-        if cur != self._dark_mode: self._dark_mode = cur; self._apply_theme()
-        self.root.after(2000, self._poll_dark_mode)
+    def _svp(self):
+        if self._sid: self.root.after_cancel(self._sid)
+        self._sid=self.root.after(16,self._vp)
 
-    def _schedule_recount(self):
-        if self._recount_after_id is not None: self.root.after_cancel(self._recount_after_id)
-        self._recount_after_id = self.root.after(150, lambda: self._count() if self.text_input.get("1.0","end-1c") != self._last_text else None)
+    def _tagg(self,tags,pairs,base=0):
+        ti,ls=self.ti,self._ls
+        if not pairs: return
+        lcs=_lc([v for s,e in pairs for v in(s,e)],ls)
+        bats=[[] for _ in range(_N)]
+        for j in range(len(pairs)): bats[(base+j)%_N].append((lcs[2*j],lcs[2*j+1]))
+        for ci,bat in enumerate(bats):
+            if bat: ti.tk.call(ti._w,"tag","add",tags[ci],*[v for s,e in bat for v in(s,e)])
 
-    def _schedule_viewport_update(self):
-        if self._scroll_after_id is not None: self.root.after_cancel(self._scroll_after_id)
-        self._scroll_after_id = self.root.after(16, self._apply_visible_highlights)
+    def _vp(self):
+        if not self._spans or not self._ls: return
+        ti,ls,spans,ss=self.ti,self._ls,self._spans,self._ss
+        fl,fc=map(int,ti.index("@0,0").split('.')); ll,lc=map(int,ti.index(f"@{ti.winfo_width()},{ti.winfo_height()}").split('.'))
+        vs=ls[min(fl-1,len(ls)-1)]+fc; ve=ls[min(ll-1,len(ls)-1)]+lc
+        fi=max(0,bisect_left(ss,vs)-200); li=min(len(spans),bisect_right(ss,ve)+200)
+        if(fi,li)==self._vrange: return
+        self._vrange=(fi,li)
+        for t in _T: ti.tag_remove(t,"1.0",tk.END)
+        vis=spans[fi:li]
+        if vis: self._tagg(_T,vis,fi)
 
-    def _on_method_change(self, selection):
-        self.method = selection
-        self.encode_func, self.spans_func, _ = self.tokenizers[selection]
-        _, _, sz = self.tokenizers[self.method]; self.method_var.set(f"{self.method} — {sz/(1024*1024):.2f} MB")
-        self._has_counted = False; self._full_results = None; self._count()
+    def _bold(self,s0,e0):
+        if not self._spans or not self._ls: return
+        spans,ss=self._spans,self._ss
+        fi=max(0,bisect_left(ss,s0)-1); li=bisect_right(ss,e0); pairs,idx=[],[]
+        for i in range(fi,min(li,len(spans))):
+            s,e=spans[i]
+            if e<=s0 or s>=e0: continue
+            pairs.append((max(s,s0),min(e,e0))); idx.append(i)
+        if pairs:
+            lcs=_lc([v for s,e in pairs for v in(s,e)],self._ls)
+            bats=[[] for _ in range(_N)]
+            for j,i in enumerate(idx): bats[i%_N].append((lcs[2*j],lcs[2*j+1]))
+            for ci,bat in enumerate(bats):
+                if bat: self.ti.tk.call(self.ti._w,"tag","add",_B[ci],*[v for s,e in bat for v in(s,e)])
 
-    def _apply_visible_highlights(self):
-        if not self._cached_spans or not self._cached_line_starts: return
-        ti, ls = self.text_input, self._cached_line_starts
-        spans, span_starts = self._cached_spans, self._cached_span_starts
-        first_idx_str = ti.index("@0,0"); last_idx_str = ti.index(f"@{ti.winfo_width()},{ti.winfo_height()}")
-        fl, fc = map(int, first_idx_str.split('.')); ll, lc = map(int, last_idx_str.split('.'))
-        vis_start = ls[min(fl-1, len(ls)-1)] + fc; vis_end = ls[min(ll-1, len(ls)-1)] + lc
-        margin = 200
-        fi = max(0, bisect_left(span_starts, vis_start) - margin)
-        li = min(len(spans), bisect_right(span_starts, vis_end) + margin)
-        if (fi, li) == self._visible_tag_range: return
-        self._visible_tag_range = (fi, li)
-        for tag in _TAG_NAMES: ti.tag_remove(tag, "1.0", tk.END)
-        visible = spans[fi:li]
-        if not visible: return
-        lc_list = _batch_offsets_to_linecol([v for s, e in visible for v in (s, e)], ls)
-        batches = [[] for _ in range(_NUM_COLORS)]
-        for j in range(len(visible)): batches[(fi+j) % _NUM_COLORS].append((lc_list[2*j], lc_list[2*j+1]))
-        for ci, batch in enumerate(batches):
-            if batch: ti.tk.call(ti._w, "tag", "add", _TAG_NAMES[ci], *[v for s, e in batch for v in (s, e)])
-
-    def _apply_bold_to_range(self, s_off, e_off):
-        if not self._cached_spans or not self._cached_line_starts: return
-        ti, ls = self.text_input, self._cached_line_starts
-        spans, span_starts = self._cached_spans, self._cached_span_starts
-        first = max(0, bisect_left(span_starts, s_off) - 1)
-        last  = bisect_right(span_starts, e_off)
-        flat, indices = [], []
-        for i in range(first, min(last, len(spans))):
-            s, e = spans[i]
-            if e <= s_off or s >= e_off: continue
-            flat += [max(s, s_off), min(e, e_off)]; indices.append(i)
-        if not flat: return
-        lc_list = _batch_offsets_to_linecol(flat, ls)
-        batches = [[] for _ in range(_NUM_COLORS)]
-        for j, idx in enumerate(indices): batches[idx % _NUM_COLORS].append((lc_list[2*j], lc_list[2*j+1]))
-        for ci, batch in enumerate(batches):
-            if batch: ti.tk.call(ti._w, "tag", "add", _TAG_NAMES_BOLD[ci], *[v for s, e in batch for v in (s, e)])
-
-    def _on_selection_change(self):
-        if not self._has_counted or self.encode_func is None: return
-        for tag in _TAG_NAMES_BOLD: self.text_input.tag_remove(tag, "1.0", tk.END)
-        try:
-            sel_text = self.text_input.get(tk.SEL_FIRST, tk.SEL_LAST)
-            content  = self.text_input.get("1.0", "end-1c")
-            if len(sel_text) > len(content): sel_text = content
+    def _sel(self):
+        if not self._done2 or not self.enc: return
+        for t in _B: self.ti.tag_remove(t,"1.0",tk.END)
+        try: sel=self.ti.get(tk.SEL_FIRST,tk.SEL_LAST)
         except tk.TclError:
-            if self._full_results: self._update_display(*self._full_results, label="Results")
+            if self._res2: self._disp(*self._res2); return
             return
-        if not sel_text.strip():
-            if self._full_results: self._update_display(*self._full_results, label="Results")
+        if not sel.strip():
+            if self._res2: self._disp(*self._res2); return
             return
-        if self._cached_line_starts:
-            sl, sc = map(int, self.text_input.index(tk.SEL_FIRST).split('.'))
-            el, ec = map(int, self.text_input.index(tk.SEL_LAST).split('.'))
-            self._apply_bold_to_range(self._cached_line_starts[sl-1]+sc, self._cached_line_starts[el-1]+ec)
-        t = len(self.encode_func(sel_text)); c = len(sel_text)
-        self._update_display(t, c, len(sel_text.split()), sel_text.count('\n')+(1 if sel_text else 0),
-                             round(c/t, 2) if t else 0, label="Results (selection)")
+        if self._ls:
+            sl,sc=map(int,self.ti.index(tk.SEL_FIRST).split('.')); el,ec=map(int,self.ti.index(tk.SEL_LAST).split('.'))
+            self._bold(self._ls[sl-1]+sc,self._ls[el-1]+ec)
+        t=len(self.enc(sel)); c=len(sel)
+        self._disp(t,c,len(sel.split()),sel.count('\n')+(1 if sel else 0),round(c/t,2) if t else 0,s=True)
 
-    def _update_display(self, tokens, chars, words, lines, cpt, label="Results"):
-        self.results_frame.config(text=label)
-        for key, val in [("tokens",f"{tokens:,}"),("characters",f"{chars:,}"),("words",f"{words:,}"),("lines",f"{lines:,}"),("cpt",f"{cpt}")]:
-            self.result_labels[key].config(text=val)
-        for name, limit in [("Haiku 4.5",200_000),("Sonnet 4.6",1_000_000),("Opus 4.6",1_000_000)]:
-            self.context_labels[name].config(text=f"  {name:12s}  {tokens:>10,} / {limit:>10,}  ({tokens/limit*100:.4f}%)")
+    def _disp(self,tok,ch,w,ln,cpt,s=False):
+        for k,v in[("tokens",f"{tok:,}"),("chars",f"{ch:,}"),("words",f"{w:,}"),("lines",f"{ln:,}"),("cpt",str(cpt))]:
+            self.rl[k].config(text=v)
+        for n,lim in _CTX: self.cl[n].config(text=f"  {n:12s}  {tok:>10,} / {lim:>10,}  ({tok/lim*100:.4f}%)")
+        if s: self.st.config(text=f"Selection: {tok:,} tokens · {ch:,} chars")
 
-    def _remove_highlights(self):
-        for tag in _TAG_NAMES + _TAG_NAMES_BOLD: self.text_input.tag_remove(tag, "1.0", tk.END)
-        self._visible_tag_range = None
+    def _rmhl(self):
+        for t in _T+_B: self.ti.tag_remove(t,"1.0",tk.END)
+        self._vrange=None
 
-    def _reset_state(self, clear_text=False):
-        self._has_counted = False; self._full_results = None
-        self._cached_spans = self._cached_span_starts = self._cached_line_starts = None
-        self.results_frame.config(text="Results")
-        for lbl in self.result_labels.values():  lbl.config(text="-")
-        for lbl in self.context_labels.values(): lbl.config(text="")
-        if clear_text: self._last_text = None; self.text_input.delete("1.0", tk.END)
+    def _rst(self,wipe=False):
+        self._done2=False; self._res2=None; self._spans=self._ss=self._ls=None
+        for lb in self.rl.values(): lb.config(text="—")
+        for lb in self.cl.values(): lb.config(text="")
+        if wipe: self._last=None; self.ti.delete("1.0",tk.END)
 
     def _count(self):
-        if self._loading or self.encode_func is None: return
-        text = self.text_input.get("1.0", "end-1c")
-        if not text.strip():
-            self._remove_highlights(); self._last_text = text; self._reset_state(); return
-        self._count_gen += 1
-        gen, spans_func = self._count_gen, self.spans_func
-        def worker():
-            try:    spans = spans_func(text)
-            except: spans = None
-            if not spans:
-                self.root.after(0, lambda: self._on_count_done(gen, text, None, None, None)); return
-            ls = _build_line_index(text); ss = [s for s, _ in spans]
-            self.root.after(0, lambda: self._on_count_done(gen, text, spans, ss, ls))
-        threading.Thread(target=worker, daemon=True).start()
+        if self._load or not self.enc: return
+        text=self.ti.get("1.0","end-1c")
+        if not text.strip(): self._rmhl(); self._last=text; self._rst(); return
+        self._gen+=1; gen,sfn=self._gen,self.sfn
+        def work():
+            try:    sp=sfn(text)
+            except: sp=None
+            if not sp: self.root.after(0,lambda:self._fin(gen,text,None,None,None)); return
+            ls=_line_idx(text); ss=[s for s,_ in sp]
+            self.root.after(0,lambda:self._fin(gen,text,sp,ss,ls))
+        threading.Thread(target=work,daemon=True).start()
 
-    def _on_count_done(self, gen, text, spans, span_starts, line_starts):
-        if gen != self._count_gen: return
-        self._cached_spans, self._cached_span_starts = spans, span_starts
-        self._cached_line_starts, self._last_text = line_starts, text
-        self._visible_tag_range = None
-        if not spans:
-            self._remove_highlights(); self._has_counted = False; self._full_results = None; return
-        t = len(spans); c = len(text)
-        self._full_results = (t, c, len(text.split()), text.count('\n')+(1 if text else 0), round(c/t,2) if t else 0)
-        self._has_counted = True
-        self._remove_highlights(); self._apply_visible_highlights()
-        self._update_display(*self._full_results, label="Results")
+    def _fin(self,gen,text,sp,ss,ls):
+        if gen!=self._gen: return
+        self._spans,self._ss,self._ls,self._last=sp,ss,ls,text; self._vrange=None
+        if not sp: self._rmhl(); self._done2=False; self._res2=None; return
+        t=len(sp); c=len(text)
+        self._res2=(t,c,len(text.split()),text.count('\n')+(1 if text else 0),round(c/t,2) if t else 0)
+        self._done2=True; self._rmhl(); self._vp(); self._disp(*self._res2)
+        self.st.config(text=f"{t:,} tokens · {c:,} chars · {self.method}")
 
     def _clear(self):
-        self._count_gen += 1; self._remove_highlights(); self._reset_state(clear_text=True)
+        self._gen+=1; self._rmhl(); self._rst(wipe=True)
+        self.st.config(text=f"Ready — {len(self.toks)} tokenizer(s)")
 
-    def _open_file(self):
-        path = filedialog.askopenfilename(filetypes=[("Text files","*.txt *.md *.py *.js *.ts *.json *.csv"),("All files","*.*")])
-        if path:
-            try:
-                with open(path, 'r', encoding='utf-8', errors='replace') as f: content = f.read()
-                self.text_input.delete("1.0", tk.END); self.text_input.insert("1.0", content); self._count()
-            except Exception as e:
-                self.text_input.delete("1.0", tk.END); self.text_input.insert("1.0", f"Error reading file: {e}")
+    def _open(self):
+        p=filedialog.askopenfilename(filetypes=[("Text files","*.txt *.md *.py *.js *.ts *.json *.csv"),("All files","*.*")])
+        if not p: return
+        try:
+            with open(p,'r',encoding='utf-8',errors='replace') as f: c=f.read()
+            self.ti.delete("1.0",tk.END); self.ti.insert("1.0",c); self._count()
+        except Exception as e:
+            self.ti.delete("1.0",tk.END); self.ti.insert("1.0",f"Error: {e}")
 
     def run(self): self.root.mainloop()
 
 
-if __name__ == "__main__":
-    TokenCounterApp().run()
+if __name__=="__main__": App().run()
