@@ -464,7 +464,10 @@ struct ContentView: View {
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            Text("Tokenizer").font(.subheadline).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Tokenixo").font(.subheadline).fontWeight(.semibold)
+                Text("v\(APP_VERSION)").font(.caption2).foregroundStyle(.tertiary)
+            }
 
             Picker("Tokenizer", selection: $selectedKind) {
                 Text("ChatGPT").tag(TokenizerKind.chatGpt)
