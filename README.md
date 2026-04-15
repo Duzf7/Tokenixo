@@ -1,7 +1,5 @@
 # Tokenixo
 
-## Description
-
 Tokenixo is a native macOS SwiftUI application that tokenizes text in real time using three production tokenizers:
 
 - **ChatGPT** — OpenAI cl100k_base BPE via [tiktoken-rs](https://github.com/zurawiki/tiktoken-rs)
