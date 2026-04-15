@@ -3,22 +3,20 @@ import AppKit
 import UniformTypeIdentifiers
 
 // MARK: - Tokenizer engine (ObservableObject, always on MainActor)
-//
-// Keeping tokenization state in a @MainActor ObservableObject guarantees that
-// @Published updates always happen on the main thread and always trigger SwiftUI
-// re-renders.  The plain @State + Task approach used previously was broken because
-// Task{} inside a View struct method does NOT inherit @MainActor, so writes to
-// @State from the continuation ran off-thread and were silently ignored.
 
 @MainActor
 final class TokenizerEngine: ObservableObject {
-    @Published var spans:        [TokenSpan]   = []
-    @Published var isTokenizing: Bool          = false
+    @Published var spans:        [TokenSpan] = []
+    @Published var isTokenizing: Bool        = false
 
     private var currentTask: Task<Void, Never>?
 
-    /// Re-tokenize `text` with `kind`.  Cancels any in-flight task first so
-    /// rapid keystrokes never stack up stale results.
+    /// Re-tokenize `text` with `kind`.
+    ///
+    /// Debounced 150 ms: if the user types another character before the timer
+    /// fires the previous task is cancelled and a new one starts.  This keeps
+    /// the UI responsive during fast typing and avoids saturating the Rust FFI
+    /// with redundant work.
     func retokenize(text: String, kind: TokenizerKind) {
         currentTask?.cancel()
         guard !text.isEmpty else {
@@ -28,16 +26,20 @@ final class TokenizerEngine: ObservableObject {
         }
 
         isTokenizing = true
-        // Snapshot values so the detached closure captures plain Sendable types.
         let t = text, k = kind
         currentTask = Task { [weak self] in
-            // Task inherits @MainActor from the enclosing class method.
-            // Task.detached moves the blocking Rust FFI call off the main thread.
+            // ── Debounce ─────────────────────────────────────────────────────
+            // Task.sleep throws CancellationError when cancel() is called, so
+            // the catch exits cleanly without reaching the Rust FFI at all.
+            do    { try await Task.sleep(for: .milliseconds(150)) }
+            catch { return }
+
+            // ── Tokenize on a background thread ──────────────────────────────
             let result = await Task.detached(priority: .userInitiated) {
-                tokenize(text: t, kind: k)      // blocking Rust FFI
+                tokenize(text: t, kind: k)
             }.value
+
             guard !Task.isCancelled else { return }
-            // We are back on MainActor — safe to write @Published properties.
             self?.spans        = result
             self?.isTokenizing = false
         }
@@ -63,9 +65,6 @@ private let contextModels: [ContextModel] = [
 
 // MARK: - Token highlight palettes (6 colours, light + dark)
 
-// UniFFI generates Swift enum cases via heck::to_lower_camel_case:
-//   "ChatGPT" → .chatGpt   "Claude" → .claude   "Gemini" → .gemini
-
 private let lightPalette: [NSColor] = [
     NSColor(red: 1.00, green: 0.91, blue: 0.71, alpha: 1),  // amber
     NSColor(red: 0.78, green: 0.95, blue: 0.78, alpha: 1),  // sage
@@ -84,16 +83,163 @@ private let darkPalette: [NSColor] = [
     NSColor(red: 0.10, green: 0.32, blue: 0.30, alpha: 1),  // mint
 ]
 
-// MARK: - Highlighted NSTextView wrapper
+// MARK: - Highlight coordinator
+//
+// Owns three optimisations:
+//
+//  1. Viewport culling — only background-color attributes in the visible
+//     scroll region (+1 viewport of padding above/below) exist in
+//     NSTextStorage at any moment.  Off-screen text has no colour attribute,
+//     so NSLayoutManager tracks far fewer attribute-run boundaries.
+//
+//  2. Incremental clear — on scroll we clear exactly the previous highlighted
+//     NSRange and stamp the new one.  On full spans replacement we clear the
+//     entire document once (one cheap removeAttribute call) then stamp the
+//     new viewport.
+//
+//  3. Single beginEditing/endEditing session — all attribute mutations happen
+//     inside one editing batch so NSLayoutManager invalidates layout only once
+//     per highlight pass.
 
 private final class HighlightCoordinator: NSObject, NSTextViewDelegate {
+
+    // ── Set by updateNSView every cycle ──────────────────────────────────────
     var onTextChange: (String) -> Void = { _ in }
+    var spans:   [TokenSpan] = []
+    var palette: [NSColor]   = []
+
+    // ── Weak refs to avoid retain cycles ─────────────────────────────────────
+    weak var scrollView: NSScrollView?
+    weak var textView:   NSTextView?
+
+    // The NSRange inside NSTextStorage that currently has backgroundColor set.
+    // We clear exactly this range before stamping the next viewport.
+    // Empty range means "nothing is highlighted" (start state, or after a
+    // full clear that left the storage clean).
+    var highlightedRange = NSRange(location: 0, length: 0)
+
+    // MARK: NSTextViewDelegate
 
     func textDidChange(_ notification: Notification) {
         guard let tv = notification.object as? NSTextView else { return }
         onTextChange(tv.string)
     }
+
+    // MARK: Scroll notification
+
+    @objc func boundsDidChange(_: Notification) {
+        // User scrolled — update which spans are coloured without a full reset.
+        applyVisibleHighlights()
+    }
+
+    // MARK: Highlight passes
+
+    /// Call when `spans` or `palette` changes.  Clears the *entire* document's
+    /// background colour (one call, O(1) in NSAttributedString) so stale
+    /// colours from a previous tokenisation that might be outside the current
+    /// viewport are removed, then stamps the new visible set.
+    func invalidateAllHighlights() {
+        guard let tv = textView, let storage = tv.textStorage else { return }
+        storage.beginEditing()
+        storage.removeAttribute(.backgroundColor,
+                                range: NSRange(location: 0, length: storage.length))
+        storage.endEditing()
+        highlightedRange = NSRange(location: 0, length: 0)
+        applyVisibleHighlights()
+    }
+
+    /// Apply background colours to the visible viewport + one screen of
+    /// padding.  Clears the previously highlighted range first so colours
+    /// never accumulate outside the active window.
+    func applyVisibleHighlights() {
+        guard
+            let sv      = scrollView,
+            let tv      = textView,
+            let storage = tv.textStorage,
+            let lm      = tv.layoutManager,
+            let tc      = tv.textContainer,
+            storage.length > 0,
+            !spans.isEmpty
+        else {
+            // No text / no spans — just wipe whatever was left.
+            if let storage = textView?.textStorage, highlightedRange.length > 0 {
+                storage.beginEditing()
+                storage.removeAttribute(.backgroundColor, range: highlightedRange)
+                storage.endEditing()
+                highlightedRange = NSRange(location: 0, length: 0)
+            }
+            return
+        }
+
+        // ── 1. Compute visible character range ────────────────────────────────
+        let visRect = sv.contentView.bounds
+        let origin  = tv.textContainerOrigin
+        let localRect = NSRect(x: visRect.minX - origin.x,
+                               y: visRect.minY - origin.y,
+                               width: visRect.width,
+                               height: visRect.height)
+
+        let glyphRange = lm.glyphRange(forBoundingRect: localRect, in: tc)
+        let charRange  = lm.characterRange(forGlyphRange: glyphRange,
+                                           actualGlyphRange: nil)
+
+        // Pad by one full viewport above and below for smooth scroll.
+        let pad   = max(charRange.length, 1)
+        let wStart = max(0, charRange.location - pad)
+        let wEnd   = min(storage.length, charRange.location + charRange.length + pad)
+        let workRange = NSRange(location: wStart, length: wEnd - wStart)
+
+        // ── 2. Binary-search for spans that intersect workRange ───────────────
+        let visible = spansInRange(workRange)
+
+        // ── 3. Single editing session: clear old, stamp new ───────────────────
+        storage.beginEditing()
+
+        if highlightedRange.length > 0 {
+            storage.removeAttribute(.backgroundColor, range: highlightedRange)
+        }
+
+        let total = storage.length
+        for span in visible {
+            let s = Int(span.start), e = Int(span.end)
+            guard s >= 0, e > s, e <= total else { continue }
+            storage.addAttribute(.backgroundColor,
+                                 value: palette[Int(span.index) % palette.count],
+                                 range: NSRange(location: s, length: e - s))
+        }
+
+        storage.endEditing()
+        highlightedRange = workRange
+    }
+
+    // MARK: Binary search helper
+
+    /// Returns the slice of `spans` whose byte ranges intersect `range`.
+    /// Runs in O(log n + k) where k is the number of matching spans.
+    private func spansInRange(_ range: NSRange) -> ArraySlice<TokenSpan> {
+        guard !spans.isEmpty else { return spans[0..<0] }
+        let lo = range.location
+        let hi = range.location + range.length
+
+        // First span with end > lo  (i.e. might overlap the left edge)
+        var left = 0, right = spans.count
+        while left < right {
+            let mid = (left + right) / 2
+            Int(spans[mid].end) <= lo ? (left = mid + 1) : (right = mid)
+        }
+        let firstIdx = left
+
+        // Scan forward until start >= hi
+        var lastIdx = firstIdx
+        while lastIdx < spans.count, Int(spans[lastIdx].start) < hi {
+            lastIdx += 1
+        }
+
+        return spans[firstIdx..<lastIdx]
+    }
 }
+
+// MARK: - Highlighted NSTextView wrapper
 
 private struct TokenizedTextEditor: NSViewRepresentable {
     @Binding var text: String
@@ -114,27 +260,43 @@ private struct TokenizedTextEditor: NSViewRepresentable {
         tv.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         tv.textContainerInset = NSSize(width: 8, height: 8)
         tv.delegate = context.coordinator
+
+        // Give the coordinator weak refs so it can reach the views from its
+        // scroll-notification callback.
+        let coord = context.coordinator
+        coord.scrollView = scroll
+        coord.textView   = tv
+
+        // Observe scroll-position changes so we repaint only the new viewport.
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            coord,
+            selector: #selector(HighlightCoordinator.boundsDidChange(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: scroll.contentView
+        )
+
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let tv = scroll.documentView as? NSTextView else { return }
+        let coord = context.coordinator
 
-        // Refresh the callback on every update cycle so the @Binding reference
-        // never goes stale if SwiftUI recreates the struct value.
-        //
-        // NOTE: no guard against tv.string == newText here.  By the time
-        // textDidChange fires, NSTextView has already committed the user's edit
-        // so tv.string always equals newText — a guard would silently swallow
-        // every keystroke.  Programmatic tv.string = text changes in this same
-        // updateNSView do NOT fire textDidChange, so there is no loop risk.
-        context.coordinator.onTextChange = { newText in
-            self.text = newText     // propagates to @State in ContentView
-        }
+        // Always refresh the binding closure so it never captures a stale self.
+        coord.onTextChange = { newText in self.text = newText }
 
-        // Update text content only when an external change happened (file open,
-        // Clear button).  Never overwrite on user-driven edits to avoid cursor
-        // position resets.
+        let newPalette  = colorScheme == .dark ? darkPalette : lightPalette
+        let paletteChanged = coord.palette.first != newPalette.first
+        let spansChanged   = coord.spans.count != spans.count
+                          || coord.spans.first?.start != spans.first?.start
+                          || coord.spans.last?.end    != spans.last?.end
+
+        coord.palette = newPalette
+        coord.spans   = spans
+
+        // If the model text differs from the view (file open, Clear button):
+        // push the new string and schedule a full highlight reset.
         if tv.string != text {
             let sel = tv.selectedRanges
             tv.string = text
@@ -143,33 +305,18 @@ private struct TokenizedTextEditor: NSViewRepresentable {
                 return r.location + r.length <= tv.string.utf16.count
             }
             if !safe.isEmpty { tv.selectedRanges = safe }
+            coord.invalidateAllHighlights()
+            return
         }
 
-        applyHighlights(to: tv)
-    }
-
-    private func applyHighlights(to tv: NSTextView) {
-        guard let storage = tv.textStorage else { return }
-        let palette   = colorScheme == .dark ? darkPalette : lightPalette
-        let fullRange = NSRange(location: 0, length: storage.length)
-
-        storage.beginEditing()
-        storage.removeAttribute(.backgroundColor, range: fullRange)
-        // Re-apply the monospaced font so that attribute edits above don't
-        // inadvertently revert the text to the system font.
-        storage.addAttribute(.font,
-                             value: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
-                             range: fullRange)
-
-        let utf16Count = tv.string.utf16.count
-        for span in spans {
-            let start = Int(span.start), end = Int(span.end)
-            guard start >= 0, end > start, end <= utf16Count else { continue }
-            storage.addAttribute(.backgroundColor,
-                                 value: palette[Int(span.index) % palette.count],
-                                 range: NSRange(location: start, length: end - start))
+        if spansChanged || paletteChanged {
+            // Spans or palette changed — must clear the entire document once to
+            // remove stale colours that may be outside the current viewport.
+            coord.invalidateAllHighlights()
         }
-        storage.endEditing()
+        // If neither spans nor text nor palette changed (e.g. a pure SwiftUI
+        // re-render for an unrelated reason) there is nothing to do; the scroll
+        // observer will handle viewport updates when the user scrolls.
     }
 }
 
@@ -274,8 +421,6 @@ struct ContentView: View {
     @State private var selectedKind: TokenizerKind = .chatGpt
     @Environment(\.colorScheme) private var colorScheme
 
-    // MARK: Derived statistics (read from engine + inputText)
-
     private var tokenCount: Int { engine.spans.count }
     private var charCount:  Int { inputText.count }
     private var wordCount:  Int { inputText.split(whereSeparator: \.isWhitespace).count }
@@ -283,8 +428,6 @@ struct ContentView: View {
         guard !inputText.isEmpty else { return 0 }
         return inputText.components(separatedBy: "\n").count
     }
-
-    // MARK: Body
 
     var body: some View {
         VStack(spacing: 0) {
@@ -296,8 +439,6 @@ struct ContentView: View {
                 colorScheme: colorScheme
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Spinner visible while the tokenizer is initialising on first use
-            // (tiktoken downloads its vocab file in the background on first call).
             .overlay(alignment: .topTrailing) {
                 if engine.isTokenizing {
                     ProgressView().scaleEffect(0.6).padding(8)
@@ -316,13 +457,10 @@ struct ContentView: View {
         .onChange(of: inputText)    { _, _ in engine.retokenize(text: inputText, kind: selectedKind) }
         .onChange(of: selectedKind) { _, _ in engine.retokenize(text: inputText, kind: selectedKind) }
         .onAppear {
-            // Verify the FFI bridge is alive; result appears in Console.app.
             let pong = ping()
             print("[Tokenixo] FFI ping → \(pong)")
         }
     }
-
-    // MARK: Toolbar
 
     private var toolbar: some View {
         HStack(spacing: 10) {
@@ -348,8 +486,6 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
-
-    // MARK: File open
 
     private func openFile() {
         let panel = NSOpenPanel()
