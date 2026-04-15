@@ -39,5 +39,5 @@ make app
 ## Packaging
 
 ```bash
-hdiutil create -volname Tokenixo -srcfolder Tokenixo.app -ov -format UDZO Tokenixo.dmg
+make dmg
 ```
