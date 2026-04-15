@@ -11,7 +11,6 @@ VERSION         := $(or $(_GIT_TAG),0.1.0)
 
 CARGO_RELEASE   := target/release
 RUST_STATICLIB  := $(CARGO_RELEASE)/libtokenixo.a
-RUST_DYLIB      := $(CARGO_RELEASE)/libtokenixo.dylib
 # SPM places the Swift binary in its own build tree
 SWIFT_BINARY    := .build/release/Tokenixo
 
@@ -35,18 +34,22 @@ app:
 	cargo build --release
 
 	# 2. Generate UniFFI Swift bindings from the UDL.
+	#    Produces: generated/tokenixo.swift  (Swift wrapper — must be compiled)
+	#              generated/tokenixoFFI.h   (C header  — found via -I generated)
+	#              generated/tokenixoFFI.modulemap
 	cargo run --bin uniffi-bindgen generate $(UDL) --language swift --out-dir $(GENERATED_DIR)/
 	#    Copy the Swift wrapper into the SPM source tree so the target picks it up.
+	#    Package.swift uses path: "Sources/Tokenixo", so only files there are compiled.
 	cp $(GENERATED_SWIFT) $(SOURCES_SWIFT)
 
 	# 3. Build the SwiftUI executable.
+	#    Package.swift links libtokenixo from target/release (cargo output dir).
 	@test -f $(GENERATED_DIR)/tokenixoFFI.h || { echo "ERROR: $(GENERATED_DIR)/tokenixoFFI.h not found — run step 2 first"; exit 1; }
 	@test -f $(GENERATED_DIR)/tokenixoFFI.modulemap || { echo "ERROR: $(GENERATED_DIR)/tokenixoFFI.modulemap not found — run step 2 first"; exit 1; }
 	swift build --configuration release
 
 	# 4. Assemble the app bundle skeleton.
 	mkdir -p $(APP_MACOS)
-	mkdir -p $(APP_RESOURCES)/Frameworks          # <-- Frameworks folder for dylib
 	mkdir -p $(APP_RESOURCES)/Resources/assets
 
 	# 5. Copy the Swift executable into the bundle.
@@ -55,33 +58,22 @@ app:
 	# 6. Copy the Info.plist into the bundle.
 	cp Info.plist $(APP_RESOURCES)/Info.plist
 
-	# 7. Bundle the tokenizer vocab assets.
+	# 7. Bundle the tokenizer vocab assets downloaded by build.rs.
+	#    These are read at runtime via assets_dir() in lib.rs which resolves
+	#    <exe>/../Resources/assets when running from the app bundle.
 	@test -d assets || { echo "ERROR: assets/ directory not found — did cargo build succeed?"; exit 1; }
 	cp -r assets/. $(APP_RESOURCES)/Resources/assets/
 
-	# 8. Gzip-compress assets to reduce app size.
+	# 8. Gzip-compress all bundled assets to reduce app size.
+	#    lib.rs decompresses on first launch into ~/Library/Caches/Tokenixo/.
 	gzip -9 -f $(APP_RESOURCES)/Resources/assets/claude-tokenizer.json
 	gzip -9 -f $(APP_RESOURCES)/Resources/assets/gemini.model
 
-	# 9. Copy the dynamic library into the app bundle.
-	cp $(RUST_DYLIB) $(APP_RESOURCES)/Frameworks/
-
-	# 10. Change the dylib's install name to a relative path.
-	install_name_tool -id @executable_path/../Frameworks/libtokenixo.dylib \
-		$(APP_RESOURCES)/Frameworks/libtokenixo.dylib
-
-	# 11. Update the executable's reference to the dylib.
-	install_name_tool -change $(RUST_DYLIB) \
-		@executable_path/../Frameworks/libtokenixo.dylib \
-		$(APP_MACOS)/Tokenixo
-
-	# 12. Ad‑hoc sign the entire bundle so it runs locally.
-	codesign --force --deep --sign - $(APP_BUNDLE)
-
-	# 13. Strip local symbols from the Swift binary (optional, saves space).
+	# 9. Strip local symbols from the Swift binary (keeps exported symbols needed
+	#    by the dynamic linker, removes debug/local ones that bloat the binary).
 	strip -x $(APP_MACOS)/Tokenixo
 
-	# 14. Done.
+	# 10. Done.
 	@echo "✓ Built $(APP_BUNDLE) v$(VERSION) — run with: open $(APP_BUNDLE)"
 
 # ── dmg ──────────────────────────────────────────────────────────────────────
@@ -90,10 +82,8 @@ dmg: app
 	@echo "Creating DMG with Applications symlink..."
 	rm -rf dmg_staging
 	mkdir -p dmg_staging
-	cp -Rp $(APP_BUNDLE) dmg_staging/
+	cp -R $(APP_BUNDLE) dmg_staging/
 	ln -s /Applications dmg_staging/Applications
-	# Ad‑hoc sign the staged app to avoid Gatekeeper quirks during packaging.
-	codesign --force --deep --sign - dmg_staging/$(APP_BUNDLE)
 	hdiutil create \
 		-volname Tokenixo \
 		-srcfolder dmg_staging \
@@ -110,4 +100,4 @@ run: app
 # ── clean ────────────────────────────────────────────────────────────────────
 
 clean:
-	rm -rf .build $(GENERATED_DIR) $(APP_BUNDLE) $(SOURCES_SWIFT) *.dmg dmg_staging
+	rm -rf .build $(GENERATED_DIR) $(APP_BUNDLE) $(SOURCES_SWIFT) *.dmg
