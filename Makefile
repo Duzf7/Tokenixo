@@ -2,7 +2,10 @@
 
 # ── Version ───────────────────────────────────────────────────────────────────
 
-VERSION         := 0.1.0
+# Derive version from the nearest git tag (e.g. v0.2.0 → 0.2.0).
+# Falls back to 0.1.0 when no tag exists (clean checkout, CI without tags, etc.).
+_GIT_TAG        := $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+VERSION         := $(or $(_GIT_TAG),0.1.0)
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
