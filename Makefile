@@ -1,4 +1,8 @@
-.PHONY: app clean run
+.PHONY: app run clean dmg
+
+# ── Version ───────────────────────────────────────────────────────────────────
+
+VERSION         := 0.1.0
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
@@ -17,6 +21,8 @@ SOURCES_SWIFT   := Sources/Tokenixo/tokenixo.swift
 APP_BUNDLE      := Tokenixo.app
 APP_MACOS       := $(APP_BUNDLE)/Contents/MacOS
 APP_RESOURCES   := $(APP_BUNDLE)/Contents
+
+DMG_NAME        := Tokenixo-$(VERSION)-macos.dmg
 
 # ── app ──────────────────────────────────────────────────────────────────────
 
@@ -56,7 +62,17 @@ app:
 	cp -r assets/. $(APP_RESOURCES)/Resources/assets/
 
 	# 8. Done.
-	@echo "✓ Built Tokenixo.app — run with: open Tokenixo.app"
+	@echo "✓ Built $(APP_BUNDLE) v$(VERSION) — run with: open $(APP_BUNDLE)"
+
+# ── dmg ──────────────────────────────────────────────────────────────────────
+
+dmg: app
+	hdiutil create \
+		-volname Tokenixo \
+		-srcfolder $(APP_BUNDLE) \
+		-ov -format UDZO \
+		$(DMG_NAME)
+	@echo "✓ Packaged $(DMG_NAME)"
 
 # ── run ──────────────────────────────────────────────────────────────────────
 
@@ -66,4 +82,4 @@ run: app
 # ── clean ────────────────────────────────────────────────────────────────────
 
 clean:
-	rm -rf .build $(GENERATED_DIR) $(APP_BUNDLE) $(SOURCES_SWIFT)
+	rm -rf .build $(GENERATED_DIR) $(APP_BUNDLE) $(SOURCES_SWIFT) *.dmg
