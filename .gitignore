@@ -8,8 +8,8 @@ target/
 generated/
 
 # macOS app bundle and distributable image (built artefacts)
-Tokenixo.app/
-Tokenixo.dmg
+*.app
+*.dmg
 
 # Tiktoken BPE vocab files cached locally (downloaded at runtime)
 assets/*.tiktoken
