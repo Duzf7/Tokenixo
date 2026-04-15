@@ -2,15 +2,16 @@ uniffi::include_scaffolding!("tokenixo");
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::io::Read;
 use tiktoken_rs::cl100k_base;
 use sentencepiece::SentencePieceProcessor;
+use flate2::read::GzDecoder;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 pub struct TokenSpan {
     pub start: u64,
     pub end: u64,
-    pub index: u64,
 }
 
 pub enum TokenizerKind {
@@ -22,7 +23,7 @@ pub enum TokenizerKind {
 // ── FFI health-check ─────────────────────────────────────────────────────────
 
 pub fn ping() -> String {
-    eprintln!("[tokenixo] ping() called — FFI bridge is alive");
+    eprintln!("[tokenixo] ping() — FFI bridge alive");
     "ok".to_string()
 }
 
@@ -30,59 +31,110 @@ pub fn ping() -> String {
 //
 // Priority:
 //   1. TOKENIXO_ASSETS_DIR env var (override for testing)
-//   2. <exe>/../Resources/assets  (inside a macOS app bundle)
-//   3. Compile-time CARGO_MANIFEST_DIR/assets (development builds)
+//   2. <exe>/../Resources/assets  (macOS app bundle)
+//   3. Compile-time CARGO_MANIFEST_DIR/assets (development)
 
 fn assets_dir() -> PathBuf {
     if let Ok(p) = std::env::var("TOKENIXO_ASSETS_DIR") {
-        let pb = PathBuf::from(&p);
-        eprintln!("[tokenixo] assets_dir: env override → {}", pb.display());
-        return pb;
+        return PathBuf::from(p);
     }
     if let Ok(exe) = std::env::current_exe() {
-        // exe is at  .../Tokenixo.app/Contents/MacOS/Tokenixo
-        // Resources is at .../Tokenixo.app/Contents/Resources/
         let candidate = exe
             .parent().unwrap_or(&exe)   // MacOS/
             .parent().unwrap_or(&exe)   // Contents/
             .join("Resources/assets");
+        eprintln!("[tokenixo] assets_dir: checking bundle candidate: {:?}", candidate);
         if candidate.exists() {
-            eprintln!("[tokenixo] assets_dir: bundle path → {}", candidate.display());
+            eprintln!("[tokenixo] assets_dir: using bundle path");
             return candidate;
         }
-        eprintln!(
-            "[tokenixo] assets_dir: bundle candidate does not exist: {}",
-            candidate.display()
-        );
     }
-    // Development fallback — baked in at compile time.
     let fallback = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"));
-    eprintln!("[tokenixo] assets_dir: compile-time fallback → {}", fallback.display());
+    eprintln!("[tokenixo] assets_dir: using compile-time fallback: {:?}", fallback);
     fallback
 }
 
-// ── Tiktoken cache → Application Support ────────────────────────────────────
+// ── Asset loader ─────────────────────────────────────────────────────────────
 //
-// tiktoken-rs respects TIKTOKEN_CACHE_DIR.  Point it at a stable, writable
-// directory so vocab files survive between launches without cluttering $HOME.
+// Pass the EXACT filename as it appears in the bundle (e.g.
+// "claude-tokenizer.json.gz").  This function:
+//   1. Tries assets_dir()/name  (exact name — the release bundle has .gz files)
+//   2. If name ends with ".gz" and the .gz wasn't found, strips the suffix and
+//      tries the plain file (development builds where assets/ has originals).
+//
+// If the file name ends with ".gz", the bytes are decompressed before return.
+
+fn read_asset(name: &str) -> Option<Vec<u8>> {
+    let dir  = assets_dir();
+    let path = dir.join(name);
+
+    eprintln!("[tokenixo] read_asset: looking for {:?}", path);
+
+    let raw_bytes: Vec<u8> = if path.exists() {
+        match std::fs::read(&path) {
+            Ok(b)  => b,
+            Err(e) => {
+                eprintln!("[tokenixo] read_asset: read failed: {e}");
+                return None;
+            }
+        }
+    } else if name.ends_with(".gz") {
+        // Bundle file not found — try the plain (non-compressed) fallback used
+        // in dev builds where assets/ contains the originals.
+        let plain_name = &name[..name.len() - 3];
+        let plain = dir.join(plain_name);
+        eprintln!("[tokenixo] read_asset: .gz not found, trying plain {:?}", plain);
+        match std::fs::read(&plain) {
+            Ok(b)  => {
+                eprintln!("[tokenixo] read_asset: read plain {} bytes from {:?}", b.len(), plain);
+                // Plain file is not compressed — return as-is.
+                return Some(b);
+            }
+            Err(e) => {
+                eprintln!("[tokenixo] read_asset: plain read also failed: {e}");
+                return None;
+            }
+        }
+    } else {
+        eprintln!("[tokenixo] read_asset: NOT FOUND: {name}");
+        return None;
+    };
+
+    // Decompress if the name indicates gzip.
+    if name.ends_with(".gz") {
+        eprintln!("[tokenixo] read_asset: decompressing {} ({} compressed bytes) …", name, raw_bytes.len());
+        let mut decoder = GzDecoder::new(raw_bytes.as_slice());
+        let mut out = Vec::new();
+        match decoder.read_to_end(&mut out) {
+            Ok(_)  => {
+                eprintln!("[tokenixo] read_asset: decompressed {} → {} bytes", name, out.len());
+                Some(out)
+            }
+            Err(e) => {
+                eprintln!("[tokenixo] read_asset: decompress failed: {e}");
+                None
+            }
+        }
+    } else {
+        eprintln!("[tokenixo] read_asset: read {} bytes from {:?}", raw_bytes.len(), path);
+        Some(raw_bytes)
+    }
+}
+
+// ── Tiktoken cache → Application Support ────────────────────────────────────
 
 fn ensure_tiktoken_cache() {
     static ONCE: OnceLock<()> = OnceLock::new();
     ONCE.get_or_init(|| {
-        if let Ok(existing) = std::env::var("TIKTOKEN_CACHE_DIR") {
-            eprintln!("[tokenixo] tiktoken cache already set: {existing}");
-            return;
-        }
+        if std::env::var("TIKTOKEN_CACHE_DIR").is_ok() { return; }
         let cache = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("Tokenixo/tiktoken-cache");
         if let Err(e) = std::fs::create_dir_all(&cache) {
-            eprintln!("[tokenixo] tiktoken cache dir creation failed: {e}");
-        } else {
-            eprintln!("[tokenixo] tiktoken cache dir: {}", cache.display());
+            eprintln!("[tokenixo] tiktoken cache dir failed: {e}");
         }
-        // Safety: OnceLock guarantees this closure executes exactly once.
         unsafe { std::env::set_var("TIKTOKEN_CACHE_DIR", &cache) };
+        eprintln!("[tokenixo] tiktoken cache → {:?}", cache);
     });
 }
 
@@ -91,182 +143,139 @@ fn ensure_tiktoken_cache() {
 fn chatgpt_spans(text: &str) -> Vec<TokenSpan> {
     ensure_tiktoken_cache();
 
-    // Store Option<CoreBPE>: None means initialisation failed.
-    // OnceLock ensures we only attempt loading once (and log the outcome).
     static BPE: OnceLock<Option<tiktoken_rs::CoreBPE>> = OnceLock::new();
-
     let slot = BPE.get_or_init(|| {
         eprintln!("[tokenixo] chatgpt: loading cl100k_base …");
         match cl100k_base() {
-            Ok(bpe) => {
-                eprintln!("[tokenixo] chatgpt: cl100k_base loaded OK");
-                Some(bpe)
-            }
-            Err(e) => {
-                eprintln!("[tokenixo] chatgpt: cl100k_base FAILED: {e}");
-                None
-            }
+            Ok(bpe) => { eprintln!("[tokenixo] chatgpt: OK"); Some(bpe) }
+            Err(e)  => { eprintln!("[tokenixo] chatgpt: FAILED: {e}"); None }
         }
     });
-
-    let Some(bpe) = slot else {
-        eprintln!("[tokenixo] chatgpt: BPE not available, returning []");
-        return vec![];
-    };
+    let Some(bpe) = slot else { return vec![]; };
 
     let token_ids = bpe.encode_ordinary(text);
-    eprintln!("[tokenixo] chatgpt: {:?} → {} tokens", text, token_ids.len());
-
     let mut spans = Vec::with_capacity(token_ids.len());
     let mut cursor: usize = 0;
-
-    for (index, &id) in token_ids.iter().enumerate() {
-        match bpe.decode_bytes(&[id]) {
-            Ok(bytes) => {
-                let len = bytes.len();
-                spans.push(TokenSpan {
-                    start: cursor as u64,
-                    end: (cursor + len) as u64,
-                    index: index as u64,
-                });
-                cursor += len;
-            }
-            Err(e) => {
-                eprintln!("[tokenixo] chatgpt: decode_bytes failed for id {id}: {e}");
-            }
+    for &id in &token_ids {
+        if let Ok(bytes) = bpe.decode_bytes(&[id]) {
+            let len = bytes.len();
+            spans.push(TokenSpan { start: cursor as u64, end: (cursor + len) as u64 });
+            cursor += len;
         }
     }
+    eprintln!("[tokenixo] chatgpt: {} spans", spans.len());
     spans
 }
 
 // ── Claude — tokenizers / Xenova/claude-tokenizer ───────────────────────────
 //
-// tokenizer.json is downloaded into assets/ at build time by build.rs.
+// The bundle stores "claude-tokenizer.json.gz".  read_asset decompresses it
+// in memory and we parse straight from bytes — no temp file needed.
+// The tokenizers::Tokenizer is cached in OnceLock so decompression + parsing
+// happens exactly once per app launch.
 
 fn claude_spans(text: &str) -> Vec<TokenSpan> {
     static TOK: OnceLock<Option<tokenizers::Tokenizer>> = OnceLock::new();
 
     let slot = TOK.get_or_init(|| {
-        let path = assets_dir().join("claude-tokenizer.json");
-        eprintln!("[tokenixo] claude: loading tokenizer from {}", path.display());
-        if !path.exists() {
-            eprintln!("[tokenixo] claude: FILE NOT FOUND: {}", path.display());
-            return None;
-        }
-        match tokenizers::Tokenizer::from_file(&path) {
-            Ok(tok) => {
-                eprintln!("[tokenixo] claude: tokenizer loaded OK");
-                Some(tok)
-            }
-            Err(e) => {
-                eprintln!("[tokenixo] claude: from_file FAILED: {e}");
-                None
-            }
+        eprintln!("[tokenixo] claude: loading tokenizer …");
+        // Exact filename as it exists in the bundle.
+        let bytes = read_asset("claude-tokenizer.json.gz")?;
+        match tokenizers::Tokenizer::from_bytes(&bytes) {
+            Ok(tok) => { eprintln!("[tokenixo] claude: loaded OK ({} decompressed bytes)", bytes.len()); Some(tok) }
+            Err(e)  => { eprintln!("[tokenixo] claude: from_bytes FAILED: {e}"); None }
         }
     });
-
-    let Some(tokenizer) = slot else {
-        eprintln!("[tokenixo] claude: tokenizer not available, returning []");
-        return vec![];
-    };
+    let Some(tokenizer) = slot else { return vec![]; };
 
     match tokenizer.encode(text, false) {
-        Ok(encoding) => {
-            let offsets = encoding.get_offsets();
-            eprintln!("[tokenixo] claude: {:?} → {} tokens", text, offsets.len());
-            offsets
-                .iter()
-                .enumerate()
-                .map(|(index, &(start, end))| TokenSpan {
-                    start: start as u64,
-                    end: end as u64,
-                    index: index as u64,
-                })
-                .collect()
+        Ok(enc) => {
+            let spans: Vec<TokenSpan> = enc.get_offsets().iter()
+                .map(|&(s, e)| TokenSpan { start: s as u64, end: e as u64 })
+                .collect();
+            eprintln!("[tokenixo] claude: {} spans", spans.len());
+            spans
         }
-        Err(e) => {
-            eprintln!("[tokenixo] claude: encode FAILED: {e}");
-            vec![]
-        }
+        Err(e) => { eprintln!("[tokenixo] claude: encode FAILED: {e}"); vec![] }
     }
 }
 
-// ── Gemini — sentencepiece / Gemma-2 ─────────────────────────────────────────
+// ── Gemini — sentencepiece ────────────────────────────────────────────────────
 //
-// tokenizer.model is downloaded into assets/ at build time by build.rs.
+// The bundle stores "gemini.model.gz".  SentencePieceProcessor::open() needs a
+// file path, so we decompress once into ~/Library/Caches/Tokenixo/gemini.model
+// and load from there.  Subsequent launches reuse the cached file.
+
+fn gemini_model_path() -> Option<PathBuf> {
+    let cache_dir = dirs::cache_dir()?.join("Tokenixo");
+    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+        eprintln!("[tokenixo] gemini: cache dir failed: {e}");
+    }
+    let cached = cache_dir.join("gemini.model");
+    if cached.exists() {
+        eprintln!("[tokenixo] gemini: cache hit {:?}", cached);
+        return Some(cached);
+    }
+
+    // Decompress from bundle (exact .gz filename) or plain dev asset.
+    let bytes = read_asset("gemini.model.gz")?;
+    match std::fs::write(&cached, &bytes) {
+        Ok(_)  => { eprintln!("[tokenixo] gemini: wrote {} bytes to cache", bytes.len()); Some(cached) }
+        Err(e) => {
+            eprintln!("[tokenixo] gemini: cache write failed: {e}");
+            // Fallback: temp file so this launch still works.
+            let tmp = std::env::temp_dir().join("tokenixo-gemini.model");
+            std::fs::write(&tmp, &bytes).ok()?;
+            eprintln!("[tokenixo] gemini: using temp {:?}", tmp);
+            Some(tmp)
+        }
+    }
+}
 
 fn gemini_spans(text: &str) -> Vec<TokenSpan> {
     static SPP: OnceLock<Option<SentencePieceProcessor>> = OnceLock::new();
 
     let slot = SPP.get_or_init(|| {
-        let path = assets_dir().join("gemini.model");
-        eprintln!("[tokenixo] gemini: loading SPM from {}", path.display());
-        if !path.exists() {
-            eprintln!("[tokenixo] gemini: FILE NOT FOUND: {}", path.display());
-            return None;
-        }
+        eprintln!("[tokenixo] gemini: loading SPM …");
+        let path = gemini_model_path()?;
         match SentencePieceProcessor::open(&path) {
-            Ok(spp) => {
-                eprintln!("[tokenixo] gemini: SPM loaded OK");
-                Some(spp)
-            }
-            Err(e) => {
-                eprintln!("[tokenixo] gemini: open FAILED: {e}");
-                None
-            }
+            Ok(spp) => { eprintln!("[tokenixo] gemini: loaded OK"); Some(spp) }
+            Err(e)  => { eprintln!("[tokenixo] gemini: open FAILED: {e}"); None }
         }
     });
-
-    let Some(spp) = slot else {
-        eprintln!("[tokenixo] gemini: SPM not available, returning []");
-        return vec![];
-    };
+    let Some(spp) = slot else { return vec![]; };
 
     match spp.encode(text) {
         Ok(pieces) => {
-            eprintln!("[tokenixo] gemini: {:?} → {} pieces", text, pieces.len());
             let mut spans = Vec::with_capacity(pieces.len());
             let mut cursor: usize = 0;
-
-            for (index, piece) in pieces.iter().enumerate() {
-                // ▁ (U+2581) is the SentencePiece word-boundary marker; replace
-                // with a literal space to recover surface bytes.
+            for piece in &pieces {
                 let surface: String = piece.piece.replace('\u{2581}', " ");
                 let sbytes = surface.as_bytes();
-
                 let slen = if cursor == 0 && sbytes.first() == Some(&b' ') {
                     sbytes.len().saturating_sub(1)
                 } else {
                     sbytes.len()
                 };
-
-                spans.push(TokenSpan {
-                    start: cursor as u64,
-                    end: (cursor + slen) as u64,
-                    index: index as u64,
-                });
+                spans.push(TokenSpan { start: cursor as u64, end: (cursor + slen) as u64 });
                 cursor += slen;
             }
+            eprintln!("[tokenixo] gemini: {} spans", spans.len());
             spans
         }
-        Err(e) => {
-            eprintln!("[tokenixo] gemini: encode FAILED: {e}");
-            vec![]
-        }
+        Err(e) => { eprintln!("[tokenixo] gemini: encode FAILED: {e}"); vec![] }
     }
 }
 
-// ── Public API (matches tokenixo.udl) ───────────────────────────────────────
+// ── Public API ───────────────────────────────────────────────────────────────
 
 pub fn tokenize(text: String, kind: TokenizerKind) -> Vec<TokenSpan> {
-    eprintln!("[tokenixo] tokenize() called, text len={}", text.len());
-    let result = match kind {
+    eprintln!("[tokenixo] tokenize() text len={}", text.len());
+    match kind {
         TokenizerKind::ChatGPT => chatgpt_spans(&text),
         TokenizerKind::Claude  => claude_spans(&text),
         TokenizerKind::Gemini  => gemini_spans(&text),
-    };
-    eprintln!("[tokenixo] tokenize() returning {} spans", result.len());
-    result
+    }
 }
 
 pub fn count_tokens(text: String, kind: TokenizerKind) -> u64 {
@@ -274,11 +283,7 @@ pub fn count_tokens(text: String, kind: TokenizerKind) -> u64 {
 }
 
 pub fn available_tokenizers() -> Vec<TokenizerKind> {
-    vec![
-        TokenizerKind::ChatGPT,
-        TokenizerKind::Claude,
-        TokenizerKind::Gemini,
-    ]
+    vec![TokenizerKind::ChatGPT, TokenizerKind::Claude, TokenizerKind::Gemini]
 }
 
 #[cfg(test)]
@@ -288,24 +293,18 @@ mod tests {
     #[test]
     fn chatgpt_hello_claude() {
         let spans = chatgpt_spans("Hello, Claude.");
-        eprintln!("ChatGPT spans: {}", spans.len());
-        for s in &spans { eprintln!("  [{},{}]", s.start, s.end); }
         assert_eq!(spans.len(), 4, "expected 4 tokens for 'Hello, Claude.'");
     }
 
     #[test]
     fn claude_hello() {
         let spans = claude_spans("Hello, Claude.");
-        eprintln!("Claude spans: {}", spans.len());
-        for s in &spans { eprintln!("  [{},{}]", s.start, s.end); }
-        assert!(spans.len() > 0, "Claude tokenizer returned empty");
+        assert!(!spans.is_empty(), "Claude tokenizer returned empty");
     }
 
     #[test]
     fn gemini_hello() {
         let spans = gemini_spans("Hello, Claude.");
-        eprintln!("Gemini spans: {}", spans.len());
-        for s in &spans { eprintln!("  [{},{}]", s.start, s.end); }
-        assert!(spans.len() > 0, "Gemini tokenizer returned empty");
+        assert!(!spans.is_empty(), "Gemini tokenizer returned empty");
     }
 }

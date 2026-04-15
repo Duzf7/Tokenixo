@@ -64,7 +64,16 @@ app:
 	@test -d assets || { echo "ERROR: assets/ directory not found — did cargo build succeed?"; exit 1; }
 	cp -r assets/. $(APP_RESOURCES)/Resources/assets/
 
-	# 8. Done.
+	# 8. Gzip-compress all bundled assets to reduce app size.
+	#    lib.rs decompresses on first launch into ~/Library/Caches/Tokenixo/.
+	gzip -9 -f $(APP_RESOURCES)/Resources/assets/claude-tokenizer.json
+	gzip -9 -f $(APP_RESOURCES)/Resources/assets/gemini.model
+
+	# 9. Strip local symbols from the Swift binary (keeps exported symbols needed
+	#    by the dynamic linker, removes debug/local ones that bloat the binary).
+	strip -x $(APP_MACOS)/Tokenixo
+
+	# 10. Done.
 	@echo "✓ Built $(APP_BUNDLE) v$(VERSION) — run with: open $(APP_BUNDLE)"
 
 # ── dmg ──────────────────────────────────────────────────────────────────────

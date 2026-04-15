@@ -457,14 +457,12 @@ fileprivate struct FfiConverterString: FfiConverter {
 public struct TokenSpan {
     public var start: UInt64
     public var end: UInt64
-    public var index: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(start: UInt64, end: UInt64, index: UInt64) {
+    public init(start: UInt64, end: UInt64) {
         self.start = start
         self.end = end
-        self.index = index
     }
 }
 
@@ -478,16 +476,12 @@ extension TokenSpan: Equatable, Hashable {
         if lhs.end != rhs.end {
             return false
         }
-        if lhs.index != rhs.index {
-            return false
-        }
         return true
     }
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(start)
         hasher.combine(end)
-        hasher.combine(index)
     }
 }
 
@@ -500,15 +494,13 @@ public struct FfiConverterTypeTokenSpan: FfiConverterRustBuffer {
         return
             try TokenSpan(
                 start: FfiConverterUInt64.read(from: &buf), 
-                end: FfiConverterUInt64.read(from: &buf), 
-                index: FfiConverterUInt64.read(from: &buf)
+                end: FfiConverterUInt64.read(from: &buf)
         )
     }
 
     public static func write(_ value: TokenSpan, into buf: inout [UInt8]) {
         FfiConverterUInt64.write(value.start, into: &buf)
         FfiConverterUInt64.write(value.end, into: &buf)
-        FfiConverterUInt64.write(value.index, into: &buf)
     }
 }
 

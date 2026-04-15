@@ -8,7 +8,6 @@ namespace tokenixo {
 dictionary TokenSpan {
     u64 start;
     u64 end;
-    u64 index;
 };
 
 enum TokenizerKind {

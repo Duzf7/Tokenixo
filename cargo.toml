@@ -11,19 +11,29 @@ name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
-# ChatGPT tokenizer (cl100k_base) — https://github.com/zurawiki/tiktoken-rs
+# ChatGPT tokenizer (cl100k_base)
 tiktoken-rs = "0.11.0"
 
-# Claude tokenizer (HuggingFace tokenizers — written in Rust)
+# Claude tokenizer (HuggingFace tokenizers)
 tokenizers = "0.22.2"
 
-# Gemini tokenizer approximation (SentencePiece)
+# Gemini tokenizer (SentencePiece)
 sentencepiece = "0.13.1"
 
-# Resolve platform-specific directories (e.g. Application Support for tiktoken cache)
+# Platform directories (Application Support, Caches)
 dirs = "5"
+
+# Gzip decompression for bundled assets
+flate2 = "1"
 
 uniffi = { version = "0.28", features = ["cli"] }
 
 [build-dependencies]
 uniffi = { version = "0.28", features = ["build"] }
+
+[profile.release]
+opt-level     = "z"   # optimise for binary size
+strip         = true  # strip symbols from the output binary
+lto           = true  # whole-program link-time optimisation
+codegen-units = 1     # single codegen unit for maximum LTO effectiveness
+panic         = "abort"
