@@ -1,6 +1,13 @@
 # Tokenixo
 
-Tokenixo is a native macOS SwiftUI application that tokenizes text in real time using three production tokenizers:
+## Installation
+Download latest version of .dmg via https://github.com/Duzf7/Tokenixo/releases.
+
+After Installing and opening the app for the first time, you should go to System Settings > Privacy & Security (Scroll to the bottom) > Find Tokenixo.app > Run anyway.
+
+## What this software does?
+
+Tokenixo is a native macOS SwiftUI application written in Rust that tokenizes text in real time using three production tokenizers:
 
 - **ChatGPT** — OpenAI cl100k_base BPE via [tiktoken-rs](https://github.com/zurawiki/tiktoken-rs)
 - **Claude** — Xenova/claude-tokenizer via HuggingFace [tokenizers](https://github.com/huggingface/tokenizers)
@@ -8,6 +15,7 @@ Tokenixo is a native macOS SwiftUI application that tokenizes text in real time 
 
 The tokenizer logic is written in Rust and exposed to Swift through a UniFFI-generated C FFI bridge. Each token is highlighted with an alternating colour palette directly in the text editor. A stats bar shows live token, character, word, and line counts. A collapsible panel shows context-window usage against six model limits.
 
+# Dev
 ## Requirements
 
 - **macOS 14 Sonoma or later**
