@@ -1,0 +1,29 @@
+[package]
+name = "tokenixo"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+# ChatGPT tokenizer (cl100k_base) — https://github.com/zurawiki/tiktoken-rs
+tiktoken-rs = "0.11.0"
+
+# Claude tokenizer (HuggingFace tokenizers — written in Rust)
+tokenizers = "0.22.2"
+
+# Gemini tokenizer approximation (SentencePiece)
+sentencepiece = "0.13.1"
+
+# Resolve platform-specific directories (e.g. Application Support for tiktoken cache)
+dirs = "5"
+
+uniffi = { version = "0.28", features = ["cli"] }
+
+[build-dependencies]
+uniffi = { version = "0.28", features = ["build"] }

@@ -1,0 +1,18 @@
+namespace tokenixo {
+    string ping();
+    sequence<TokenSpan> tokenize(string text, TokenizerKind kind);
+    u64 count_tokens(string text, TokenizerKind kind);
+    sequence<TokenizerKind> available_tokenizers();
+};
+
+dictionary TokenSpan {
+    u64 start;
+    u64 end;
+    u64 index;
+};
+
+enum TokenizerKind {
+    "ChatGPT",
+    "Claude",
+    "Gemini",
+};

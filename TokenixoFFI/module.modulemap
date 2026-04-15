@@ -1,0 +1,4 @@
+module tokenixoFFI {
+    header "../generated/tokenixoFFI.h"
+    export *
+}
