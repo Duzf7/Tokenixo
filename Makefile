@@ -79,11 +79,17 @@ app:
 # ── dmg ──────────────────────────────────────────────────────────────────────
 
 dmg: app
+	@echo "Creating DMG with Applications symlink..."
+	rm -rf dmg_staging
+	mkdir -p dmg_staging
+	cp -R $(APP_BUNDLE) dmg_staging/
+	ln -s /Applications dmg_staging/Applications
 	hdiutil create \
 		-volname Tokenixo \
-		-srcfolder $(APP_BUNDLE) \
+		-srcfolder dmg_staging \
 		-ov -format UDZO \
 		$(DMG_NAME)
+	rm -rf dmg_staging
 	@echo "✓ Packaged $(DMG_NAME)"
 
 # ── run ──────────────────────────────────────────────────────────────────────
