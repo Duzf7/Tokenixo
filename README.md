@@ -4,6 +4,7 @@
 Download latest version of .dmg via https://github.com/Duzf7/Tokenixo/releases.
 
 After installing, open the app once — macOS will block it. Then go to **System Settings → Privacy & Security** (scroll to the bottom) and click **Open Anyway**.
+![Alt text](./README.md_assets/Open_Anyway.png)
 
 > **Note:** The "Open Anyway" button only appears for roughly one hour after the blocked launch attempt. If you don't see it, run this command in Terminal instead:
 > ```bash
