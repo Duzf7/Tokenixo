@@ -37,14 +37,18 @@ After installing, open the app once — macOS will block it. Then go to **System
 ---
 
 ## Roadmap
-
-- [ ] Homebrew Cask distribution
-- [ ] Llama / local model support
-- [ ] Token diff view (compare two texts side by side)
-- [ ] Menu bar mode
-- [ ] GPT-4o and Claude 3.5 context-window presets
-
-
+### Short-term
+- [ ] Add custom model selection button with 50+ LLM models support.
+- [ ] Reduce memory usage (target sub-200MB RAM usage on active 2M tokens).
+- [ ] Reduce CPU/GPU load while scrolling and pasting large texts.
+- [ ] Homebrew Cask distribution.
+- [ ] Token diff view (compare two texts side by side) via new tab.
+- [ ] Menu bar mode (count token real-time on any selected text in the device).
+### Long-term
+- [ ] Support image input token counting (approximately).
+- [ ] Support audio input token counting (approximately).
+- [ ] Support video input token counting (approximately).
+- [ ] Support reasoning token counting (approximately).
 
 ---
 
