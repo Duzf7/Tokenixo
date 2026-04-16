@@ -38,7 +38,7 @@ After installing, open the app once — macOS will block it. Then go to **System
 
 ## Roadmap
 ### Short-term
-- [ ] Add more tokenizers (that have Rust edition)
+- [ ] Add more tokenizers (that have Rust edition).
 - [ ] Add custom model selection button with 50+ LLM models support.
 - [ ] Reduce memory usage (target sub-200MB RAM usage on active 2M tokens).
 - [ ] Reduce CPU/GPU load while scrolling and pasting large texts.
