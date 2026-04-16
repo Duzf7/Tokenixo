@@ -1,38 +1,68 @@
 # Tokenixo
 
+100% offline token counter for ChatGPT, Claude, and Gemini — no API key, no telemetry, no data leaves your Mac.
+
+![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-lightgrey) ![License](https://img.shields.io/github/license/Duzf7/Tokenixo) ![Release](https://img.shields.io/github/v/release/Duzf7/Tokenixo)
+
+<!-- Replace with actual screenshot or GIF -->
+![Tokenixo Demo](./README.md_assets/demo.gif)
+
+---
+
+## Overview
+
+Tokenixo is a native macOS app that tokenizes text in real time using three production-grade tokenizers:
+
+| Model | Tokenizer | Implementation |
+|---|---|---|
+| **ChatGPT** | OpenAI cl100k_base BPE | [tiktoken-rs](https://github.com/zurawiki/tiktoken-rs) |
+| **Claude** | Xenova/claude-tokenizer | HuggingFace [tokenizers](https://github.com/huggingface/tokenizers) |
+| **Gemini** | SentencePiece | [sentencepiece-rs](https://codeberg.org/danieldk/sentencepiece) |
+
+The tokenizer logic is written in Rust and exposed to Swift through a UniFFI-generated C FFI bridge. Each token is highlighted with an alternating colour palette directly in the text editor. A stats bar shows live token, character, word, and line counts. A collapsible panel shows context-window usage against six model limits.
+
+---
+
 ## Installation
-Download latest version of .dmg via https://github.com/Duzf7/Tokenixo/releases.
+
+Download the latest `.dmg` from [Releases](https://github.com/Duzf7/Tokenixo/releases).
 
 After installing, open the app once — macOS will block it. Then go to **System Settings → Privacy & Security** (scroll to the bottom) and click **Open Anyway**.
-![Alt text](./README.md_assets/Open_Anyway.png)
 
-> **Note:** The "Open Anyway" button only appears for roughly one hour after the blocked launch attempt. If you don't see it, run this command in Terminal instead:
+![Open Anyway](./README.md_assets/Open_Anyway.png)
+
+> **Note:** The "Open Anyway" button only appears for roughly one hour after the blocked launch attempt. If you don't see it, run this in Terminal instead:
 > ```bash
 > xattr -d com.apple.quarantine /Applications/Tokenixo.app
 > ```
 > Then open the app normally.
 
-## What this software does?
+---
 
-Tokenixo is a native macOS SwiftUI application written in Rust that tokenizes text in real time using three production tokenizers:
+## Roadmap
 
-- **ChatGPT** — OpenAI cl100k_base BPE via [tiktoken-rs](https://github.com/zurawiki/tiktoken-rs)
-- **Claude** — Xenova/claude-tokenizer via HuggingFace [tokenizers](https://github.com/huggingface/tokenizers)
-- **Gemini** — SentencePiece approximation via [sentencepiece-rs](https://codeberg.org/danieldk/sentencepiece)
+- [ ] Homebrew Cask distribution
+- [ ] Llama / local model support
+- [ ] Token diff view (compare two texts side by side)
+- [ ] Menu bar mode
+- [ ] GPT-4o and Claude 3.5 context-window presets
 
-The tokenizer logic is written in Rust and exposed to Swift through a UniFFI-generated C FFI bridge. Each token is highlighted with an alternating colour palette directly in the text editor. A stats bar shows live token, character, word, and line counts. A collapsible panel shows context-window usage against six model limits.
 
-# Dev
+
+---
+
+# Developer
+
 ## Requirements
 
 - **macOS 14 Sonoma or later**
 - **Rust** (stable toolchain) — install via [rustup](https://rustup.rs)
 - **Swift** — included with Xcode Command Line Tools (`xcode-select --install`)
 - **cmake** — required by the sentencepiece-rs build:
-  ```
+  ```bash
   brew install cmake
   ```
-- **Homebrew** — https://brew.sh (used to install cmake)
+- **Homebrew** — https://brew.sh
 
 Optional:
 - `swiftformat` — auto-formats generated Swift bindings (`brew install swiftformat`)
@@ -51,29 +81,18 @@ This runs four steps in order:
 3. `swift build --configuration release` — compiles the SwiftUI app, linking against `libtokenixo`.
 4. Assembles `Tokenixo.app` bundle with the executable, `Info.plist`, and the `assets/` directory under `Contents/Resources/assets/`.
 
-To open the finished bundle:
-
 ```bash
-open Tokenixo.app
-# or
-make run
-```
-
-To clean all build artefacts:
-
-```bash
-make clean
+open Tokenixo.app  # or: make run
+make clean         # remove all build artefacts
 ```
 
 ## Test
-
-Run the Rust unit tests (covers all three tokenizers with "Hello, Claude." as a smoke-test input):
 
 ```bash
 cargo test -- --nocapture
 ```
 
-Expected output includes:
+Expected output:
 
 ```
 [tokenixo] chatgpt: "Hello, Claude." → 4 tokens
@@ -86,13 +105,11 @@ The Swift layer has no separate test target; exercise it by launching the app an
 
 ## Package
 
-To build a distributable disk image:
-
 ```bash
 make dmg
 ```
 
-This creates `Tokenixo.dmg` containing the app bundle. (Requires the `make app` step to have succeeded first.)
+Produces `Tokenixo.dmg` containing the app bundle. Requires `make app` to have succeeded first.
 
 ## Project Structure
 
@@ -116,7 +133,7 @@ Tokenixo/
 │   ├── claude-tokenizer.json  # Xenova/claude-tokenizer (HuggingFace, ~1.7 MB)
 │   └── gemini.model        # SentencePiece model for Gemini approximation (~773 KB)
 ├── build.rs                # Cargo build script: runs UniFFI scaffolding + downloads assets
-├── cargo.toml              # Rust package manifest and dependencies
+├── Cargo.toml              # Rust package manifest and dependencies
 ├── Cargo.lock              # Locked dependency versions
 ├── Package.swift           # Swift Package Manager manifest (TokenixoFFI + Tokenixo targets)
 ├── Makefile                # Top-level build orchestration (app, run, clean, dmg)
@@ -126,12 +143,22 @@ Tokenixo/
 └── README.md               # This file
 ```
 
-### Key design decisions
+## Key Design Decisions
 
 | Decision | Rationale |
 |---|---|
-| Rust tokenizers exposed via UniFFI | Keeps the heavy vocab-loading and BPE logic in Rust; Swift only handles UI |
+| Rust tokenizers exposed via UniFFI | Keeps heavy vocab-loading and BPE logic in Rust; Swift handles UI only |
 | `@MainActor ObservableObject` for tokenizer state | Guarantees `@Published` updates fire on the main thread; plain `@State + Task` does not |
 | Build-time vocab download in `build.rs` | Bundles assets into the app so no network access is needed at runtime |
 | `systemLibrary` SPM target for C header | Required so Swift can resolve `RustBuffer`, `RustCallStatus`, and all FFI symbols |
 | tiktoken cache → Application Support | Keeps OpenAI vocab files in a persistent, writable location across launches |
+
+---
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
+
+---
+
+**Please do not donate.** I built this for fun and I'm doing fine.

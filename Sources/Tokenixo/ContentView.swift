@@ -62,6 +62,7 @@ private let contextModels: [ContextModel] = [
     ContextModel(name: "Gemini 3.1 Pro",    limit: 1_048_576),
     ContextModel(name: "GPT-5.4",           limit: 1_050_000),
     ContextModel(name: "Grok 4.20",         limit: 2_000_000),
+    ContextModel(name: "Muse Spark",        limit: 262_000),
 ]
 
 // MARK: - Token highlight palettes
@@ -153,24 +154,51 @@ private final class HighlightCoordinator: NSObject, NSTextViewDelegate {
         // Snapshot everything the background task needs; capture by value so
         // the main-thread state can change freely while the task runs.
         generation &+= 1
-        let gen   = generation
-        let buf   = spanBuffer          // value copy — O(n) but cheap for UInt32
-        let pal   = palette
-        let total = storage.length      // read on main thread while storage is stable
+        let gen  = generation
+        let buf  = spanBuffer          // value copy — O(n) but cheap for UInt32
+        let pal  = palette
+        let text = storage.string      // capture for UTF-8→UTF-16 conversion
 
         // ── Step 2: build attribute list off-main ────────────────────────────
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // Build a byte-offset → UTF-16-offset lookup table in one O(n) pass.
+            // Spans from Rust carry UTF-8 byte offsets; NSRange requires UTF-16.
+            var byteToUtf16 = [Int]()
+            byteToUtf16.reserveCapacity(text.utf8.count + 1)
+            var utf16Pos = 0
+            for scalar in text.unicodeScalars {
+                let byteLen  = scalar.utf8.count
+                let utf16Len = String(scalar).utf16.count
+                for _ in 0 ..< byteLen { byteToUtf16.append(utf16Pos) }
+                utf16Pos += utf16Len
+            }
+            byteToUtf16.append(utf16Pos)  // sentinel: past-the-end position
+            let utf16Total = utf16Pos
+
             let count = buf.count / 2
             var attrs = [(NSRange, NSColor)]()
             attrs.reserveCapacity(count)
+            var lastColorIdx = -1
             for i in 0 ..< count {
-                let s = Int(buf[i * 2])
-                // Extend end to the start of the next span (covers whitespace gap),
-                // or to the full document length for the last span.
-                let e = i + 1 < count ? Int(buf[(i + 1) * 2]) : total
-                guard s >= 0, e > s, e <= total else { continue }
-                attrs.append((NSRange(location: s, length: e - s),
-                              pal[i % pal.count]))
+                let byteS = Int(buf[i * 2])
+                // Extend end to the start of the next span (covers whitespace/
+                // newline gaps), or to the document end for the last span.
+                let byteE = i + 1 < count ? Int(buf[(i + 1) * 2]) : text.utf8.count
+
+                guard byteS >= 0, byteE > byteS,
+                      byteS < byteToUtf16.count, byteE < byteToUtf16.count else { continue }
+
+                let s = byteToUtf16[byteS]
+                let e = byteToUtf16[byteE]
+                guard e > s, e <= utf16Total else { continue }
+
+                // Avoid consecutive spans sharing the same palette color so
+                // adjacent highlighted lines are always visually distinct.
+                var colorIdx = i % pal.count
+                if colorIdx == lastColorIdx { colorIdx = (colorIdx + 1) % pal.count }
+                lastColorIdx = colorIdx
+
+                attrs.append((NSRange(location: s, length: e - s), pal[colorIdx]))
             }
 
             // ── Step 3: apply temporary attributes on main thread ─────────────
@@ -334,7 +362,7 @@ private struct ContextWindowPanel: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(spacing: 8) {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                 ForEach(contextModels) { ContextWindowRow(model: $0, tokenCount: tokenCount) }
             }
             .padding(.top, 4)
@@ -404,25 +432,30 @@ struct ContentView: View {
                 Text("v\(APP_VERSION)").font(.caption2).foregroundStyle(.tertiary)
             }
 
-            Picker("Tokenizer", selection: $selectedKind) {
-                Text("tiktoken-rs 0.11.0")   .tag(TokenizerKind.chatGpt)
-                Text("tokenizers 0.22.2")    .tag(TokenizerKind.claude)
-                Text("sentencepiece 0.13.1") .tag(TokenizerKind.gemini)
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(width: 130)
-
             Spacer()
 
-            Button("Clear") { inputText = ""; engine.spanBuffer = [] }
-                .keyboardShortcut(.delete, modifiers: [.command, .shift])
+            HStack(spacing: 8) {
+                Picker("Tokenizer", selection: $selectedKind) {
+                    Text("tiktoken-rs 0.11.0")   .tag(TokenizerKind.chatGpt)
+                    Text("tokenizers 0.22.2")    .tag(TokenizerKind.claude)
+                    Text("sentencepiece 0.13.1") .tag(TokenizerKind.gemini)
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 325)
 
-            Button("Open…") { openFile() }
+                Button("Clear") { inputText = ""; engine.spanBuffer = [] }
+                    .keyboardShortcut(.delete, modifiers: [.command, .shift])
+
+                Button { openFile() } label: {
+                    Text("Open File")
+                        .frame(minWidth: 80)
+                }
                 .keyboardShortcut("o", modifiers: .command)
+            }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 4)
     }
 
     private func openFile() {
