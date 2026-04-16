@@ -7,6 +7,13 @@ fn main() {
     let assets = Path::new("assets");
     std::fs::create_dir_all(assets).expect("failed to create assets/");
 
+    // ChatGPT / cl100k_base — publicly hosted by OpenAI, no auth required.
+    download_if_missing(
+        assets.join("cl100k_base.tiktoken").as_path(),
+        &["https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"],
+        true,
+    );
+
     // Claude tokenizer — public Xenova mirror, no auth required.
     download_if_missing(
         assets.join("claude-tokenizer.json").as_path(),

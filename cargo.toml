@@ -4,15 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["staticlib"]
 
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
-# ChatGPT tokenizer (cl100k_base)
-tiktoken-rs = "0.11.0"
+# BPE engine for ChatGPT tokenizer (vendored from tiktoken-rs, no embedded vocab)
+fancy-regex = "0.13"
+# Base64 decoding for tiktoken vocab file
+base64 = "0.22"
+# FxHashMap used by CoreBPE
+rustc-hash = "1"
 
 # Claude tokenizer (HuggingFace tokenizers)
 tokenizers = "0.22.2"

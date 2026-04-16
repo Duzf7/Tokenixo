@@ -43,13 +43,16 @@ app:
 	cp $(GENERATED_SWIFT) $(SOURCES_SWIFT)
 
 	# 3. Build the SwiftUI executable.
-	#    Package.swift links libtokenixo from target/release (cargo output dir).
+	#    Remove any stale dylib so the linker is forced to use libtokenixo.a
+	#    (static), producing a fully self-contained binary with no dylib dependency.
 	@test -f $(GENERATED_DIR)/tokenixoFFI.h || { echo "ERROR: $(GENERATED_DIR)/tokenixoFFI.h not found — run step 2 first"; exit 1; }
 	@test -f $(GENERATED_DIR)/tokenixoFFI.modulemap || { echo "ERROR: $(GENERATED_DIR)/tokenixoFFI.modulemap not found — run step 2 first"; exit 1; }
+	rm -f target/release/libtokenixo.dylib target/release/deps/libtokenixo.dylib
 	swift build --configuration release
 
-	# 4. Assemble the app bundle skeleton.
+	# 4. Assemble the app bundle skeleton (always start with a clean assets dir).
 	mkdir -p $(APP_MACOS)
+	rm -rf $(APP_RESOURCES)/Resources/assets
 	mkdir -p $(APP_RESOURCES)/Resources/assets
 
 	# 5. Copy the Swift executable into the bundle.
@@ -58,22 +61,17 @@ app:
 	# 6. Copy the Info.plist into the bundle.
 	cp Info.plist $(APP_RESOURCES)/Info.plist
 
-	# 7. Bundle the tokenizer vocab assets downloaded by build.rs.
-	#    These are read at runtime via assets_dir() in lib.rs which resolves
-	#    <exe>/../Resources/assets when running from the app bundle.
-	@test -d assets || { echo "ERROR: assets/ directory not found — did cargo build succeed?"; exit 1; }
-	cp -r assets/. $(APP_RESOURCES)/Resources/assets/
+	# 7. Bundle all tokenizer vocab assets uncompressed.
+	#    All three are read at runtime from Contents/Resources/assets/.
+	@test -d assets || { echo "ERROR: assets/ not found — did cargo build succeed?"; exit 1; }
+	cp assets/cl100k_base.tiktoken  $(APP_RESOURCES)/Resources/assets/
+	cp assets/claude-tokenizer.json $(APP_RESOURCES)/Resources/assets/
+	cp assets/gemini.model          $(APP_RESOURCES)/Resources/assets/
 
-	# 8. Gzip-compress all bundled assets to reduce app size.
-	#    lib.rs decompresses on first launch into ~/Library/Caches/Tokenixo/.
-	gzip -9 -f $(APP_RESOURCES)/Resources/assets/claude-tokenizer.json
-	gzip -9 -f $(APP_RESOURCES)/Resources/assets/gemini.model
-
-	# 9. Strip local symbols from the Swift binary (keeps exported symbols needed
-	#    by the dynamic linker, removes debug/local ones that bloat the binary).
+	# 8. Strip local symbols from the Swift binary.
 	strip -x $(APP_MACOS)/Tokenixo
 
-	# 10. Done.
+	# 9. Done.
 	@echo "✓ Built $(APP_BUNDLE) v$(VERSION) — run with: open $(APP_BUNDLE)"
 
 # ── dmg ──────────────────────────────────────────────────────────────────────

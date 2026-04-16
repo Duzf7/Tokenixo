@@ -3,7 +3,11 @@ uniffi::include_scaffolding!("tokenixo");
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::io::Read;
-use tiktoken_rs::cl100k_base;
+use base64::{engine::general_purpose, Engine as _};
+use rustc_hash::FxHashMap;
+
+mod bpe;
+use bpe::{CoreBPE, Rank};
 use sentencepiece::SentencePieceProcessor;
 use flate2::read::GzDecoder;
 
@@ -121,32 +125,35 @@ fn read_asset(name: &str) -> Option<Vec<u8>> {
     }
 }
 
-// ── Tiktoken cache → Application Support ────────────────────────────────────
+// ── ChatGPT — cl100k_base read from the app bundle ───────────────────────────
 
-fn ensure_tiktoken_cache() {
-    static ONCE: OnceLock<()> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        if std::env::var("TIKTOKEN_CACHE_DIR").is_ok() { return; }
-        let cache = dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("Tokenixo/tiktoken-cache");
-        if let Err(e) = std::fs::create_dir_all(&cache) {
-            eprintln!("[tokenixo] tiktoken cache dir failed: {e}");
-        }
-        unsafe { std::env::set_var("TIKTOKEN_CACHE_DIR", &cache) };
-        eprintln!("[tokenixo] tiktoken cache → {:?}", cache);
-    });
+const CL100K_PAT: &str =
+    "'(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?+\\p{L}++|\\p{N}{1,3}+| ?[^\\s\\p{L}\\p{N}]++[\\r\\n]*+|\\s++$|\\s*[\\r\\n]|\\s+(?!\\S)|\\s";
+
+fn chatgpt_bpe_from_bytes(bytes: &[u8]) -> Result<CoreBPE, Box<dyn std::error::Error>> {
+    let text = std::str::from_utf8(bytes)?;
+    let mut encoder: FxHashMap<Vec<u8>, Rank> = FxHashMap::default();
+    for line in text.lines() {
+        let mut parts = line.split(' ');
+        let raw  = parts.next().ok_or("missing token")?;
+        let rank: Rank = parts.next().ok_or("missing rank")?.trim().parse()?;
+        encoder.insert(general_purpose::STANDARD.decode(raw)?, rank);
+    }
+    let mut special: FxHashMap<String, Rank> = FxHashMap::default();
+    special.insert("<|endoftext|>".into(), 100257);
+    special.insert("<|fim_prefix|>".into(), 100258);
+    special.insert("<|fim_middle|>".into(), 100259);
+    special.insert("<|fim_suffix|>".into(), 100260);
+    special.insert("<|endofprompt|>".into(), 100276);
+    Ok(CoreBPE::new(encoder, special, CL100K_PAT)?)
 }
 
-// ── ChatGPT — tiktoken-rs / cl100k_base ─────────────────────────────────────
-
 fn chatgpt_spans(text: &str) -> Vec<TokenSpan> {
-    ensure_tiktoken_cache();
-
-    static BPE: OnceLock<Option<tiktoken_rs::CoreBPE>> = OnceLock::new();
+    static BPE: OnceLock<Option<CoreBPE>> = OnceLock::new();
     let slot = BPE.get_or_init(|| {
         eprintln!("[tokenixo] chatgpt: loading cl100k_base …");
-        match cl100k_base() {
+        let bytes = read_asset("cl100k_base.tiktoken")?;
+        match chatgpt_bpe_from_bytes(&bytes) {
             Ok(bpe) => { eprintln!("[tokenixo] chatgpt: OK"); Some(bpe) }
             Err(e)  => { eprintln!("[tokenixo] chatgpt: FAILED: {e}"); None }
         }
@@ -167,22 +174,16 @@ fn chatgpt_spans(text: &str) -> Vec<TokenSpan> {
     spans
 }
 
-// ── Claude — tokenizers / Xenova/claude-tokenizer ───────────────────────────
-//
-// The bundle stores "claude-tokenizer.json.gz".  read_asset decompresses it
-// in memory and we parse straight from bytes — no temp file needed.
-// The tokenizers::Tokenizer is cached in OnceLock so decompression + parsing
-// happens exactly once per app launch.
+// ── Claude — tokenizer JSON read from the app bundle ─────────────────────────
 
 fn claude_spans(text: &str) -> Vec<TokenSpan> {
     static TOK: OnceLock<Option<tokenizers::Tokenizer>> = OnceLock::new();
 
     let slot = TOK.get_or_init(|| {
         eprintln!("[tokenixo] claude: loading tokenizer …");
-        // Exact filename as it exists in the bundle.
-        let bytes = read_asset("claude-tokenizer.json.gz")?;
+        let bytes = read_asset("claude-tokenizer.json")?;
         match tokenizers::Tokenizer::from_bytes(&bytes) {
-            Ok(tok) => { eprintln!("[tokenixo] claude: loaded OK ({} decompressed bytes)", bytes.len()); Some(tok) }
+            Ok(tok) => { eprintln!("[tokenixo] claude: OK"); Some(tok) }
             Err(e)  => { eprintln!("[tokenixo] claude: from_bytes FAILED: {e}"); None }
         }
     });

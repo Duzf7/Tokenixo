@@ -23,7 +23,10 @@ let package = Package(
             path: "Sources/Tokenixo",
             linkerSettings: [
                 .unsafeFlags(["-L", "target/release"]),
-                .linkedLibrary("tokenixo")
+                .linkedLibrary("tokenixo"),
+                .linkedLibrary("c++"),
+                .linkedFramework("Foundation"),
+                .linkedFramework("Security"),
             ]
         )
     ]

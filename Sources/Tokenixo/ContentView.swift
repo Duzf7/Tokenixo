@@ -61,6 +61,7 @@ private let contextModels: [ContextModel] = [
     ContextModel(name: "Gemini 3 Flash",    limit: 1_048_576),
     ContextModel(name: "Gemini 3.1 Pro",    limit: 1_048_576),
     ContextModel(name: "GPT-5.4",           limit: 1_050_000),
+    ContextModel(name: "Grok 4.20",         limit: 2_000_000),
 ]
 
 // MARK: - Token highlight palettes
@@ -133,12 +134,19 @@ private final class HighlightCoordinator: NSObject, NSTextViewDelegate {
     ///     beginEditing/endEditing block so NSLayoutManager invalidates layout
     ///     exactly once regardless of token count.
     func invalidateAllHighlights() {
-        guard let tv = textView, let storage = tv.textStorage else { return }
+        guard let tv = textView,
+              let storage = tv.textStorage,
+              let lm = tv.layoutManager else { return }
 
-        // ── Step 1: reset to plain monospace text ────────────────────────────
-        let font  = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        let fresh = NSAttributedString(string: tv.string, attributes: [.font: font])
-        storage.setAttributedString(fresh)
+        // ── Step 1: ensure plain monospace font is set (no flicker reset) ────
+        let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let fullRange = NSRange(location: 0, length: storage.length)
+        storage.beginEditing()
+        storage.addAttribute(.font, value: font, range: fullRange)
+        storage.endEditing()
+
+        // Clear all temporary background colors from the previous pass.
+        lm.removeTemporaryAttribute(.backgroundColor, forCharacterRange: fullRange)
 
         guard !spanBuffer.isEmpty else { return }
 
@@ -165,14 +173,17 @@ private final class HighlightCoordinator: NSObject, NSTextViewDelegate {
                               pal[i % pal.count]))
             }
 
-            // ── Step 3: apply on main inside one editing session ─────────────
+            // ── Step 3: apply temporary attributes on main thread ─────────────
+            // NSLayoutManager.addTemporaryAttribute fills the FULL glyph rect
+            // (including line spacing / leading) unlike storage backgroundColor.
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.generation == gen else { return }
-                storage.beginEditing()
+                let currentLen = storage.length
                 for (range, color) in attrs {
-                    storage.addAttribute(.backgroundColor, value: color, range: range)
+                    guard range.location + range.length <= currentLen else { continue }
+                    lm.addTemporaryAttribute(.backgroundColor, value: color,
+                                            forCharacterRange: range)
                 }
-                storage.endEditing()
             }
         }
     }
@@ -199,6 +210,9 @@ private struct TokenizedTextEditor: NSViewRepresentable {
         tv.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         tv.textContainerInset = NSSize(width: 8, height: 8)
         tv.delegate = context.coordinator
+        // Access layoutManager before first layout to pin TextKit 1 mode on
+        // macOS 14+. NSLayoutManager.addTemporaryAttribute requires TextKit 1.
+        _ = tv.layoutManager
 
         let coord = context.coordinator
         coord.textView = tv
@@ -391,9 +405,9 @@ struct ContentView: View {
             }
 
             Picker("Tokenizer", selection: $selectedKind) {
-                Text("ChatGPT").tag(TokenizerKind.chatGpt)
-                Text("Claude") .tag(TokenizerKind.claude)
-                Text("Gemini") .tag(TokenizerKind.gemini)
+                Text("tiktoken-rs 0.11.0")   .tag(TokenizerKind.chatGpt)
+                Text("tokenizers 0.22.2")    .tag(TokenizerKind.claude)
+                Text("sentencepiece 0.13.1") .tag(TokenizerKind.gemini)
             }
             .pickerStyle(.menu)
             .labelsHidden()
