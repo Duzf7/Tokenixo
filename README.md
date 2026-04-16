@@ -2,10 +2,7 @@
 
 100% offline token counter for ChatGPT, Claude, and Gemini — no API key, no telemetry, no data leaves your Mac.
 
-![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-lightgrey) ![License](https://img.shields.io/github/license/Duzf7/Tokenixo) ![Release](https://img.shields.io/github/v/release/Duzf7/Tokenixo)
-
-<!-- Replace with actual screenshot or GIF -->
-![Tokenixo Demo](./README.md_assets/demo.gif)
+![Demo](./README.md_assets/Demo.png)
 
 ---
 
