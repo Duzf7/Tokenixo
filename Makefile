@@ -71,7 +71,11 @@ app:
 	# 8. Strip local symbols from the Swift binary.
 	strip -x $(APP_MACOS)/Tokenixo
 
-	# 9. Done.
+	# 9. Ad-hoc code sign (no Developer ID — macOS will show "unidentified developer").
+	#    Users can bypass by right-clicking the app and choosing Open.
+	codesign --deep --force --sign - $(APP_BUNDLE)
+
+	# 10. Done.
 	@echo "✓ Built $(APP_BUNDLE) v$(VERSION) — run with: open $(APP_BUNDLE)"
 
 # ── dmg ──────────────────────────────────────────────────────────────────────

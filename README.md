@@ -3,7 +3,13 @@
 ## Installation
 Download latest version of .dmg via https://github.com/Duzf7/Tokenixo/releases.
 
-After Installing and opening the app for the first time, you should go to System Settings > Privacy & Security (Scroll to the bottom) > Find Tokenixo.app > Run anyway.
+After installing, open the app once — macOS will block it. Then go to **System Settings → Privacy & Security** (scroll to the bottom) and click **Open Anyway**.
+
+> **Note:** The "Open Anyway" button only appears for roughly one hour after the blocked launch attempt. If you don't see it, run this command in Terminal instead:
+> ```bash
+> xattr -d com.apple.quarantine /Applications/Tokenixo.app
+> ```
+> Then open the app normally.
 
 ## What this software does?
 
